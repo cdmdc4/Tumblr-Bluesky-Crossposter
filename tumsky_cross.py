@@ -43,6 +43,7 @@ def load_state():
 
 
 def save_state(state):
+    # Keep last 500 post IDs
     state["posted_ids"] = state["posted_ids"][-500:]
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
@@ -53,13 +54,26 @@ def save_state(state):
 # ---------------------------------------------------------
 
 def get_recent_tumblr_posts():
-    url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=30"
-    resp = requests.get(url)
-    data = resp.json()
+    url = (
+        f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts"
+        f"?api_key={TUMBLR_API_KEY}&notes_info=false&reblog_info=false&limit=30"
+    )
+    resp = requests.get(url).json()
     try:
-        return data["response"]["posts"]
+        posts = resp["response"]["posts"]
     except:
         return []
+
+    # Deduplicate by ID
+    seen = set()
+    clean = []
+    for p in posts:
+        pid = str(p.get("id"))
+        if pid not in seen:
+            clean.append(p)
+            seen.add(pid)
+
+    return clean
 
 
 # ---------------------------------------------------------
@@ -69,23 +83,19 @@ def get_recent_tumblr_posts():
 def extract_images(post):
     urls = []
 
-    # NPF blocks
     for block in post.get("content", []):
         if block.get("type") == "image":
             for media in block.get("media", []):
                 if "url" in media:
                     urls.append(media["url"])
 
-    # Trail HTML
     for item in post.get("trail", []):
         html = item.get("content_raw") or ""
         urls += re.findall(r'<img[^>]+src="([^"]+)"', html)
 
-    # Body HTML
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # Legacy photos
     if post.get("type") == "photo":
         for p in post.get("photos", []):
             try:
@@ -109,30 +119,23 @@ def extract_gif(post):
 
 
 def extract_video(post):
-    # NPF video blocks
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
-                if media.get("url", "").endswith(".mp4"):
-                    return media["url"]
-            if block.get("url", "").endswith(".mp4"):
-                return block["url"]
+                u = media.get("url", "")
+                if u.endswith(".mp4"):
+                    return u
 
-    # Legacy
     if post.get("video_url", "").endswith(".mp4"):
         return post["video_url"]
 
-    # Trail HTML
     for t in post.get("trail", []):
-        raw = t.get("content_raw", "")
-        m = re.search(r'src="([^"]+\.mp4)"', raw)
+        m = re.search(r'src="([^"]+\.mp4)"', t.get("content_raw", ""))
         if m:
             return m.group(1)
 
-    # Player embeds
     for embed in post.get("player", []):
-        code = embed.get("embed_code", "")
-        m = re.search(r'src="([^"]+\.mp4)"', code)
+        m = re.search(r'src="([^"]+\.mp4)"', embed.get("embed_code", ""))
         if m:
             return m.group(1)
 
@@ -140,8 +143,34 @@ def extract_video(post):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS
+#                BLUESKY UPLOADS (FIXED)
 # ---------------------------------------------------------
+
+def post_to_bluesky_video(client, tumblr_url, video_url):
+    print("Downloading video…")
+    data = requests.get(video_url).content
+
+    print("Uploading blob…")
+    blob = client.com.atproto.repo.upload_blob(data)
+
+    print("Creating video embed…")
+    video_embed = {
+        "$type": "app.bsky.embed.video",
+        "video": blob.blob,
+        "alt": ""
+    }
+
+    print("Posting video…")
+    return client.app.bsky.feed.post.create(
+        repo=client.me.did,
+        record={
+            "$type": "app.bsky.feed.post",
+            "text": tumblr_url,
+            "embed": video_embed,
+            "createdAt": client.get_current_time_iso(),
+        }
+    )
+
 
 def post_to_bluesky_images(client, tumblr_url, image_urls):
     uploaded = []
@@ -184,7 +213,7 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
 
 
 # ---------------------------------------------------------
-#                MAIN LOGIC (with 30-post limit)
+#                MAIN LOGIC
 # ---------------------------------------------------------
 
 def main():
@@ -197,17 +226,17 @@ def main():
         print("❌ No Tumblr posts found.")
         return
 
-    # Sort newest → oldest
-    posts = sorted(posts, key=lambda p: int(p["id"]))
+    # Sort by timestamp to ensure chronological order
+    posts = sorted(posts, key=lambda p: p.get("timestamp", 0))
 
-    # ✅ HARD LIMIT: NEVER exceed 30 posts, no matter what Tumblr returns
+    # Hard-limit newest 30
     posts = posts[:30]
 
     state = load_state()
     posted_ids = state["posted_ids"]
 
     for post in posts:
-        post_id = str(post.get("id_string") or post.get("id"))
+        post_id = str(post.get("id"))
         tumblr_link = post.get("post_url", "").strip()
 
         print("\n--- Checking Tumblr post:", post_id)
@@ -220,22 +249,17 @@ def main():
         gif = extract_gif(post)
         images = extract_images(post)
 
-        if not video and not gif and not images:
-            print("Text-only — skipping.")
-            posted_ids.append(post_id)
-            save_state(state)
-            continue
-
-        # VIDEO
         if video:
-            print("Posting VIDEO (external)…")
-            print("❌ Video posting temporarily disabled due to API instability.")
-            # You can enable again once we fully fix your video pipeline.
-            posted_ids.append(post_id)
-            save_state(state)
+            print("Posting VIDEO…")
+            try:
+                post_to_bluesky_video(client, tumblr_link, video)
+                print("✔ Video posted.")
+                posted_ids.append(post_id)
+                save_state(state)
+            except Exception as e:
+                print("❌ Video error:", e)
             continue
 
-        # GIF
         if gif:
             print("Posting GIF…")
             try:
@@ -247,7 +271,6 @@ def main():
                 print("❌ GIF error:", e)
             continue
 
-        # IMAGES
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
@@ -258,6 +281,10 @@ def main():
             except Exception as e:
                 print("❌ Image error:", e)
             continue
+
+        print("Nothing postable — skipping.")
+        posted_ids.append(post_id)
+        save_state(state)
 
     print("\nDone!")
 
