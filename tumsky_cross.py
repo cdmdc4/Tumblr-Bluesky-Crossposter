@@ -69,10 +69,6 @@ def normalize_url(url):
 # ---------------------------------------------------------
 
 def bluesky_has_posted_url(tumblr_url):
-    """
-    Returns True if the latest Bluesky posts already contain this Tumblr URL
-    (in text OR embed).
-    """
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
     did = client.me.did
@@ -80,9 +76,7 @@ def bluesky_has_posted_url(tumblr_url):
     norm = normalize_url(tumblr_url)
 
     try:
-        feed = client.app.bsky.feed.get_author_feed(
-            params={"actor": did, "limit": 5}
-        )
+        feed = client.app.bsky.feed.get_author_feed(params={"actor": did, "limit": 5})
     except Exception as e:
         print("Error fetching Bluesky feed:", e)
         return False
@@ -91,65 +85,58 @@ def bluesky_has_posted_url(tumblr_url):
         post = item.post
         record = post.record
 
-        # --- Check text -----------------------------------
         text = getattr(record, "text", "") or ""
         if norm in text:
-            print("Found match in text.")
             return True
 
-        # --- Check embed ----------------------------------
         embed = getattr(record, "embed", None)
         if not embed:
             continue
 
         etype = getattr(embed, "$type", "")
 
-        # External URL card embed
+        # external embed
         if etype == "app.bsky.embed.external#view":
             external = getattr(embed, "external", None)
             if external:
                 uri = getattr(external, "uri", "")
                 if norm in uri:
-                    print("Found match in external embed.")
                     return True
 
-        # Record-with-media embed
+        # record-with-media
         if etype == "app.bsky.embed.recordWithMedia#view":
-            record_embed = getattr(embed, "record", None)
-            if record_embed:
-                uri = getattr(record_embed, "uri", "")
-                if norm in uri:
-                    print("Found match in record-with-media.")
-                    return True
+            rec = getattr(embed, "record", None)
+            if rec and norm in getattr(rec, "uri", ""):
+                return True
 
-        # Record-only embed
+        # record-only
         if etype == "app.bsky.embed.record#view":
-            record_embed = getattr(embed, "record", None)
-            if record_embed:
-                uri = getattr(record_embed, "uri", "")
-                if norm in uri:
-                    print("Found match in record embed.")
-                    return True
+            rec = getattr(embed, "record", None)
+            if rec and norm in getattr(rec, "uri", ""):
+                return True
 
     return False
 
 
 # ---------------------------------------------------------
-#                IMAGE EXTRACTION
+#                IMAGE & VIDEO EXTRACTION
 # ---------------------------------------------------------
 
-def extract_all_images(post):
+def extract_images(post):
     urls = []
 
+    # trail HTML
     for item in post.get("trail", []):
         html = item.get("content_raw") or item.get("content") or ""
         urls += re.findall(r'<img[^>]+src="([^"]+)"', html)
 
+    # body HTML
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    if post.get("type") == "photo" and "photos" in post:
-        for p in post["photos"]:
+    # photo type
+    if post.get("type") == "photo":
+        for p in post.get("photos", []):
             try:
                 urls.append(p["original_size"]["url"])
             except:
@@ -163,11 +150,22 @@ def extract_all_images(post):
     return clean[:4]
 
 
+def extract_video(post):
+    """
+    Extracts Tumblr video URL (mp4).
+    Tumblr video posts contain "video_url".
+    """
+    if post.get("type") != "video":
+        return None
+
+    return post.get("video_url") or None
+
+
 # ---------------------------------------------------------
 #                BLUESKY POSTING
 # ---------------------------------------------------------
 
-def post_to_bluesky_multi(tumblr_url, image_urls):
+def post_to_bluesky_images(tumblr_url, image_urls):
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
@@ -180,6 +178,32 @@ def post_to_bluesky_multi(tumblr_url, image_urls):
     embed = {
         "$type": "app.bsky.embed.images",
         "images": uploaded,
+    }
+
+    return client.app.bsky.feed.post.create(
+        repo=client.me.did,
+        record={
+            "$type": "app.bsky.feed.post",
+            "text": tumblr_url,
+            "embed": embed,
+            "createdAt": client.get_current_time_iso(),
+        },
+    )
+
+
+def post_to_bluesky_video(tumblr_url, video_url):
+    client = Client()
+    client.login(BSKY_USERNAME, BSKY_PASSWORD)
+
+    video_bytes = requests.get(video_url).content
+    blob = client.com.atproto.repo.upload_blob(video_bytes)
+
+    embed = {
+        "$type": "app.bsky.embed.video",
+        "video": {
+            "video": blob.blob,
+            "alt": "",
+        }
     }
 
     return client.app.bsky.feed.post.create(
@@ -215,33 +239,42 @@ def main():
     print(f"Latest Tumblr post: {post_id}")
     print(f"Stored last id    : {last_post_id}")
 
-    # -------------------------------------------------
-    # FINAL DUPLICATE CHECK
-    # -------------------------------------------------
+    # Duplicate check (Bluesky + local)
     if bluesky_has_posted_url(tumblr_link):
         print("Bluesky already posted this link. Exiting.")
         save_state(post_id, tumblr_link)
         return
 
-    # Also prevent duplicates from state file
     if post_id == last_post_id or normalize_url(tumblr_link) == normalize_url(last_post_url):
         print("No new posts. Exiting.")
         return
 
-    images = extract_all_images(post)
-    if not images:
-        print("No images found. Saving state.")
-        save_state(post_id, tumblr_link)
+    # Extract media
+    video = extract_video(post)
+    images = extract_images(post)
+
+    if video:
+        print("Detected VIDEO post. Uploading to Bluesky...")
+        try:
+            post_to_bluesky_video(tumblr_link, video)
+            print("✔ Video posted. Updating state.")
+            save_state(post_id, tumblr_link)
+        except Exception as e:
+            print("❌ Bluesky video error:", e)
         return
 
-    print(f"Posting {len(images)} images to Bluesky…")
+    if images:
+        print(f"Posting {len(images)} images to Bluesky…")
+        try:
+            post_to_bluesky_images(tumblr_link, images)
+            print("✔ Images posted. Updating state.")
+            save_state(post_id, tumblr_link)
+        except Exception as e:
+            print("❌ Bluesky image error:", e)
+        return
 
-    try:
-        post_to_bluesky_multi(tumblr_link, images)
-        print("✔ Success! Updating state.")
-        save_state(post_id, tumblr_link)
-    except Exception as e:
-        print("❌ Bluesky error:", e)
+    print("No images or video found. Saving state only.")
+    save_state(post_id, tumblr_link)
 
 
 if __name__ == "__main__":
