@@ -1,4 +1,4 @@
-name: Tumblr → Bluesky Crossposter
+name: Tumblr-Bluesky-Crossposter
 
 on:
   schedule:
