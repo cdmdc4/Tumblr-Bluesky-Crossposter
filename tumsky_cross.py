@@ -239,17 +239,28 @@ def post_to_bluesky_video(tumblr_url, video_url):
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
+    # Download video from Tumblr
     video_bytes = requests.get(video_url).content
-    blob = client.com.atproto.repo.upload_blob(video_bytes)
 
+    # Upload video blob FIRST
+    blob = client.com.atproto.repo.upload_blob(
+        data=video_bytes,
+        mime_type="video/mp4"
+    )
+
+    # Bluesky requires this strict structure:
     embed = {
         "$type": "app.bsky.embed.video",
         "video": {
-            "video": blob.blob,
-            "alt": "",
-        }
+            "$type": "blob",
+            "ref": blob.blob.ref,        # <-- MUST be the raw ref object
+            "mimeType": "video/mp4",
+            "size": len(video_bytes)
+        },
+        "alt": "Video"
     }
 
+    # Create post record
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
@@ -259,6 +270,7 @@ def post_to_bluesky_video(tumblr_url, video_url):
             "createdAt": client.get_current_time_iso(),
         },
     )
+
 
 
 # ---------------------------------------------------------
@@ -323,3 +335,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
