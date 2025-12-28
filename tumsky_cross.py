@@ -217,21 +217,24 @@ def get_recent_bsky_tumblr_ids(client, limit=50):
 
     tumblr_ids = set()
 
+    # atproto 0.0.65 requires params={} wrapper
     feed = client.app.bsky.feed.get_author_feed(
-        actor=client.me.did,
-        limit=limit
+        params={
+            "actor": client.me.did,
+            "limit": limit,
+        }
     )
 
     for item in feed.feed:
         record = item.post.record
         text = record.get("text", "")
 
-        # Find Tumblr post ID inside the Tumblr URL
         match = re.search(r"/post/(\d+)", text)
         if match:
             tumblr_ids.add(match.group(1))
 
     return tumblr_ids
+
 
 
 # ---------------------------------------------------------
@@ -303,5 +306,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
