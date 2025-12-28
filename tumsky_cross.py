@@ -43,7 +43,7 @@ def save_state(post_id, post_url):
 # ---------------------------------------------------------
 
 def get_recent_tumblr_posts():
-    url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=10"
+    url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=35"
     resp = requests.get(url)
     data = resp.json()
 
@@ -317,4 +317,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
