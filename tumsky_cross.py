@@ -211,6 +211,28 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
         },
     )
 
+def get_recent_bsky_tumblr_ids(client, limit=50):
+    """Return a set of Tumblr post IDs found in your latest Bluesky posts."""
+    import re
+
+    tumblr_ids = set()
+
+    feed = client.app.bsky.feed.get_author_feed(
+        actor=client.me.did,
+        limit=limit
+    )
+
+    for item in feed.feed:
+        record = item.post.record
+        text = record.get("text", "")
+
+        # Find Tumblr post ID inside the Tumblr URL
+        match = re.search(r"/post/(\d+)", text)
+        if match:
+            tumblr_ids.add(match.group(1))
+
+    return tumblr_ids
+
 
 # ---------------------------------------------------------
 #                MAIN LOGIC
@@ -279,7 +301,7 @@ def main():
     print("\nDone!")
 
 
-
 if __name__ == "__main__":
     main()
+
 
