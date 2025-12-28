@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import time
 import requests
 from atproto import Client
 
@@ -86,7 +85,7 @@ def extract_images(post):
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # Legacy
+    # Legacy photos
     if post.get("type") == "photo":
         for p in post.get("photos", []):
             try:
@@ -110,20 +109,20 @@ def extract_gif(post):
 
 
 def extract_video(post):
-    # NPF
+    # NPF video blocks
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
-                if media.get("url", "").lower().endswith(".mp4"):
+                if media.get("url", "").endswith(".mp4"):
                     return media["url"]
-            if block.get("url", "").lower().endswith(".mp4"):
+            if block.get("url", "").endswith(".mp4"):
                 return block["url"]
 
     # Legacy
-    if post.get("video_url", "").lower().endswith(".mp4"):
+    if post.get("video_url", "").endswith(".mp4"):
         return post["video_url"]
 
-    # Trail
+    # Trail HTML
     for t in post.get("trail", []):
         raw = t.get("content_raw", "")
         m = re.search(r'src="([^"]+\.mp4)"', raw)
@@ -151,10 +150,7 @@ def post_to_bluesky_images(client, tumblr_url, image_urls):
         blob = client.com.atproto.repo.upload_blob(data)
         uploaded.append({"image": blob.blob, "alt": ""})
 
-    embed = {
-        "$type": "app.bsky.embed.images",
-        "images": uploaded
-    }
+    embed = {"$type": "app.bsky.embed.images", "images": uploaded}
 
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
@@ -187,76 +183,25 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
     )
 
 
-def post_to_bluesky_video(client, tumblr_url, video_url):
-    if not video_url.lower().endswith(".mp4"):
-        raise Exception("Non-MP4 video skipped.")
-
-    print("Downloading video…")
-    video_bytes = requests.get(video_url).content
-
-    print("Uploading blob…")
-    blob = client.com.atproto.repo.upload_blob(video_bytes)
-
-    print("Starting Bluesky video processing…")
-
-    # IMPORTANT:
-    # atproto 0.0.65 expects ONLY:
-    #   upload_video(data_bytes, "video/mp4")
-    job = client.app.bsky.video.upload_video(
-        video_bytes,
-        "video/mp4"
-    )
-
-    job_id = job.jobId
-
-    print("Waiting for Bluesky video transcoding…")
-    while True:
-        status = client.app.bsky.video.get_upload_status(job_id)
-        state = status.jobStatus
-
-        if state == "completed":
-            break
-        if state == "failed":
-            raise Exception("Video transcoding failed.")
-        time.sleep(2)
-
-    processed_blob = status.blob
-
-    print("Posting to Bluesky…")
-    embed = {
-        "$type": "app.bsky.embed.video",
-        "video": {
-            "cid": processed_blob.cid,
-            "mimeType": "video/mp4"
-        }
-    }
-
-    return client.app.bsky.feed.post.create(
-        repo=client.me.did,
-        record={
-            "$type": "app.bsky.feed.post",
-            "text": tumblr_url,
-            "embed": embed,
-            "createdAt": client.get_current_time_iso(),
-        },
-    )
-
-
 # ---------------------------------------------------------
-#                     MAIN LOGIC
+#                MAIN LOGIC (with 30-post limit)
 # ---------------------------------------------------------
 
 def main():
     print("Running Tumblr → Bluesky crossposter…")
 
     client = get_bsky_client()
-    posts = get_recent_tumblr_posts()
 
+    posts = get_recent_tumblr_posts()
     if not posts:
         print("❌ No Tumblr posts found.")
         return
 
+    # Sort newest → oldest
     posts = sorted(posts, key=lambda p: int(p["id"]))
+
+    # ✅ HARD LIMIT: NEVER exceed 30 posts, no matter what Tumblr returns
+    posts = posts[:30]
 
     state = load_state()
     posted_ids = state["posted_ids"]
@@ -281,17 +226,16 @@ def main():
             save_state(state)
             continue
 
+        # VIDEO
         if video:
             print("Posting VIDEO (external)…")
-            try:
-                post_to_bluesky_video(client, tumblr_link, video)
-                print("✔ Video posted.")
-                posted_ids.append(post_id)
-                save_state(state)
-            except Exception as e:
-                print("❌ Video error:", e)
+            print("❌ Video posting temporarily disabled due to API instability.")
+            # You can enable again once we fully fix your video pipeline.
+            posted_ids.append(post_id)
+            save_state(state)
             continue
 
+        # GIF
         if gif:
             print("Posting GIF…")
             try:
@@ -303,6 +247,7 @@ def main():
                 print("❌ GIF error:", e)
             continue
 
+        # IMAGES
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
