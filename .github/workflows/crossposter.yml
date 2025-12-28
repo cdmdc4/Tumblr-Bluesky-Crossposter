@@ -18,6 +18,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install ImageMagick + FFmpeg
+        run: |
+          sudo apt update
+          sudo apt install -y imagemagick ffmpeg
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
