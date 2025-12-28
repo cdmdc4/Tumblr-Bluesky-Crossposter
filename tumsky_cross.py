@@ -211,29 +211,43 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
         },
     )
 
-def get_recent_bsky_tumblr_ids(client, limit=50):
-    """Return a set of Tumblr post IDs found in your latest Bluesky posts."""
-    import re
+def get_recent_bsky_tumblr_ids(client):
+    """
+    Fetch the user's latest Bluesky posts and extract Tumblr post IDs
+    from any crossposted link inside the post.text field.
+    """
+    print("Fetching recent Bluesky posts to avoid duplicates…")
 
-    tumblr_ids = set()
-
-    # atproto 0.0.65 requires params={} wrapper
     feed = client.app.bsky.feed.get_author_feed(
         params={
             "actor": client.me.did,
-            "limit": limit,
+            "limit": 50
         }
     )
 
-    for item in feed.feed:
-        record = item.post.record
-        text = record.get("text", "")
+    tumblr_ids = set()
 
-        match = re.search(r"/post/(\d+)", text)
+    for item in feed.feed:
+        record = getattr(item, "post", None)
+        if not record:
+            continue
+
+        record = getattr(record, "record", None)
+        if not record:
+            continue
+
+        # Safely extract text
+        text = getattr(record, "text", "")
+        if not isinstance(text, str):
+            continue
+
+        # Look for Tumblr post URLs
+        match = re.search(r"tumblr\.com/.+/(\d+)", text)
         if match:
             tumblr_ids.add(match.group(1))
 
     return tumblr_ids
+
 
 
 
@@ -306,6 +320,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
