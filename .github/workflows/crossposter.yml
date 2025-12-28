@@ -3,7 +3,7 @@ name: Tumblr → Bluesky Crossposter
 on:
   schedule:
     - cron: "*/1 * * * *"   # runs every 1 minute
-  workflow_dispatch:        # allows manual runs too
+  workflow_dispatch:
 
 jobs:
   run-crossposter:
@@ -25,8 +25,8 @@ jobs:
 
       - name: Run the crossposter
         env:
-          TUMBLR_API_KEY: ${{ secrets.X15BoaWTNM4BTyeRFKA3lD3Z5dleZMftRkir19CGcoErakJgQ3 }}
-          TUMBLR_BLOG_IDENTIFIER: ${{ secrets.heartburns4ff.tumblr.com }}
-          BSKY_USERNAME: ${{ secrets.heartburns4ff.bsky.social }}
-          BSKY_PASSWORD: ${{ secrets.npvd-wutz-fzpl-6w66 }}
+          TUMBLR_API_KEY: ${{ secrets.TUMBLR_API_KEY }}
+          TUMBLR_BLOG_IDENTIFIER: ${{ secrets.TUMBLR_BLOG_IDENTIFIER }}
+          BSKY_USERNAME: ${{ secrets.BSKY_USERNAME }}
+          BSKY_PASSWORD: ${{ secrets.BSKY_PASSWORD }}
         run: python tumsky_cross.py
