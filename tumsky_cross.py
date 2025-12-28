@@ -5,13 +5,13 @@ import requests
 from atproto import Client
 
 # ---------------------------------------------------------
-#                CONFIGURATION
+#                CONFIGURATION (FROM ACTION SECRETS)
 # ---------------------------------------------------------
 
 TUMBLR_API_KEY = os.getenv("TUMBLR_API_KEY")
 TUMBLR_BLOG = os.getenv("TUMBLR_BLOG_IDENTIFIER")
 
-BSKY_HANDLE = os.getenv("BSKY_USERNAME")
+BSKY_USERNAME = os.getenv("BSKY_USERNAME")
 BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 
 STATE_FILE = "tumblr_state.json"
@@ -195,5 +195,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
