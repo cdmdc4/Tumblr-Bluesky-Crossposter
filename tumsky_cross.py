@@ -221,19 +221,17 @@ def main():
 
     client = get_bsky_client()
 
+    print("Fetching recent Bluesky posts to avoid duplicates…")
+    bsky_ids = get_recent_bsky_tumblr_ids(client)
+    print("Found", len(bsky_ids), "existing Tumblr IDs on Bluesky.")
+
     posts = get_recent_tumblr_posts()
     if not posts:
         print("❌ No Tumblr posts found.")
         return
 
-    # Sort by timestamp to ensure chronological order
     posts = sorted(posts, key=lambda p: p.get("timestamp", 0))
-
-    # Hard-limit newest 30
     posts = posts[:30]
-
-    state = load_state()
-    posted_ids = state["posted_ids"]
 
     for post in posts:
         post_id = str(post.get("id"))
@@ -241,8 +239,8 @@ def main():
 
         print("\n--- Checking Tumblr post:", post_id)
 
-        if post_id in posted_ids:
-            print("Already posted — skipping.")
+        if post_id in bsky_ids:
+            print("Already posted on Bluesky — skipping.")
             continue
 
         video = extract_video(post)
@@ -254,8 +252,6 @@ def main():
             try:
                 post_to_bluesky_video(client, tumblr_link, video)
                 print("✔ Video posted.")
-                posted_ids.append(post_id)
-                save_state(state)
             except Exception as e:
                 print("❌ Video error:", e)
             continue
@@ -265,8 +261,6 @@ def main():
             try:
                 post_to_bluesky_gif(client, tumblr_link, gif)
                 print("✔ GIF posted.")
-                posted_ids.append(post_id)
-                save_state(state)
             except Exception as e:
                 print("❌ GIF error:", e)
             continue
@@ -276,18 +270,16 @@ def main():
             try:
                 post_to_bluesky_images(client, tumblr_link, images)
                 print("✔ Images posted.")
-                posted_ids.append(post_id)
-                save_state(state)
             except Exception as e:
                 print("❌ Image error:", e)
             continue
 
         print("Nothing postable — skipping.")
-        posted_ids.append(post_id)
-        save_state(state)
 
     print("\nDone!")
 
 
+
 if __name__ == "__main__":
     main()
+
