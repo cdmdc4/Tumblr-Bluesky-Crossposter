@@ -1,0 +1,32 @@
+name: Tumblr → Bluesky Crossposter
+
+on:
+  schedule:
+    - cron: "*/1 * * * *"   # runs every 1 minute
+  workflow_dispatch:        # allows manual runs too
+
+jobs:
+  run-crossposter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests atproto
+
+      - name: Run the crossposter
+        env:
+          TUMBLR_API_KEY: ${{ secrets.X15BoaWTNM4BTyeRFKA3lD3Z5dleZMftRkir19CGcoErakJgQ3 }}
+          TUMBLR_BLOG_IDENTIFIER: ${{ secrets.heartburns4ff.tumblr.com }}
+          BSKY_USERNAME: ${{ secrets.heartburns4ff.bsky.social }}
+          BSKY_PASSWORD: ${{ secrets.npvd-wutz-fzpl-6w66 }}
+        run: python tumsky_cross.py
