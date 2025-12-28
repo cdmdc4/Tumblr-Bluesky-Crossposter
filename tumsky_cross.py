@@ -305,7 +305,7 @@ def main():
 
     # Extract media
     video = extract_video(post)
-    print("Extracted video URL:", video_url)
+    print("Extracted video URL:", video)   # <-- ADD THIS
     images = extract_images(post)
 
     if video:
@@ -334,6 +334,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
