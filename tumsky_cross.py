@@ -187,19 +187,51 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
 
 
 def post_to_bluesky_video(client, tumblr_url, video_url):
-    # IMPORTANT:
-    # Older atproto-py CANNOT embed uploaded videos.
-    # We must use app.bsky.embed.external.
+    # Must be mp4 or skip
+    if not video_url.lower().endswith(".mp4"):
+        raise Exception("Non-MP4 video skipped.")
 
+    print("Downloading video…")
+    video_bytes = requests.get(video_url).content
+
+    # 1. Upload blob
+    print("Uploading blob…")
+    blob = client.com.atproto.repo.upload_blob(video_bytes)
+
+    # 2. Start video processing job
+    print("Starting Bluesky video processing…")
+    job = client.app.bsky.video.upload_video(
+        blob=blob.blob,          # the blob reference
+        encoding="video/mp4"     # required by Bluesky API
+    )
+
+    job_id = job.jobId
+
+    # 3. Poll until processing is done
+    print("Waiting for Bluesky video transcoding…")
+    while True:
+        status = client.app.bsky.video.get_upload_status(job_id)
+        state = status.jobStatus
+
+        if state == "completed":
+            break
+        elif state == "failed":
+            raise Exception("Bluesky video processing failed.")
+        else:
+            import time
+            time.sleep(2)
+
+    # 4. Build final video embed
     embed = {
-        "$type": "app.bsky.embed.external",
-        "external": {
-            "uri": video_url,
-            "title": "Video",
-            "description": "Tumblr video"
+        "$type": "app.bsky.embed.video",
+        "video": {
+            "cid": status.blob.cid,
+            "mimeType": "video/mp4"
         }
     }
 
+    # 5. Create Bluesky post
+    print("Posting to Bluesky…")
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
@@ -209,6 +241,7 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
             "createdAt": client.get_current_time_iso(),
         },
     )
+
 
 
 # ---------------------------------------------------------
@@ -290,3 +323,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
