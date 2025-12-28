@@ -18,7 +18,7 @@ STATE_FILE = "tumblr_state.json"
 
 
 # ---------------------------------------------------------
-#                UTIL: BLUESKY CLIENT (single login)
+#                UTIL: BLUESKY CLIENT
 # ---------------------------------------------------------
 
 def get_bsky_client():
@@ -49,7 +49,7 @@ def save_state(state):
 
 
 # ---------------------------------------------------------
-#                TUMBLR API (FETCH LAST 30)
+#                TUMBLR API
 # ---------------------------------------------------------
 
 def get_recent_tumblr_posts():
@@ -63,7 +63,7 @@ def get_recent_tumblr_posts():
 
 
 # ---------------------------------------------------------
-#                MEDIA EXTRACTORS
+#                MEDIA EXTRACTION
 # ---------------------------------------------------------
 
 def extract_images(post):
@@ -109,7 +109,7 @@ def extract_gif(post):
 
 
 def extract_video(post):
-    # NPF
+    # NPF video blocks
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
@@ -129,7 +129,7 @@ def extract_video(post):
         if m:
             return m.group(1)
 
-    # Embed_code
+    # Player embeds
     for embed in post.get("player", []):
         code = embed.get("embed_code", "")
         m = re.search(r'src="([^"]+\.mp4)"', code)
@@ -140,7 +140,7 @@ def extract_video(post):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS (2025-compliant)
+#                BLUESKY UPLOADS
 # ---------------------------------------------------------
 
 def post_to_bluesky_images(client, tumblr_url, image_urls):
@@ -148,10 +148,7 @@ def post_to_bluesky_images(client, tumblr_url, image_urls):
     for url in image_urls:
         data = requests.get(url).content
         blob = client.com.atproto.repo.upload_blob(data)
-        uploaded.append({
-            "image": blob.blob,   # correct format for SDK 2025
-            "alt": ""
-        })
+        uploaded.append({"image": blob.blob, "alt": ""})
 
     embed = {
         "$type": "app.bsky.embed.images",
@@ -171,7 +168,7 @@ def post_to_bluesky_images(client, tumblr_url, image_urls):
 
 def post_to_bluesky_gif(client, tumblr_url, gif_url):
     data = requests.get(gif_url).content
-    blob = client.com.atproto.repo.upload_blob(data, mime_type="image/gif")
+    blob = client.com.atproto.repo.upload_blob(data)
 
     embed = {
         "$type": "app.bsky.embed.images",
@@ -190,19 +187,16 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
 
 
 def post_to_bluesky_video(client, tumblr_url, video_url):
-    # Download MP4
-    video_bytes = requests.get(video_url).content
+    # IMPORTANT:
+    # Older atproto-py CANNOT embed uploaded videos.
+    # We must use app.bsky.embed.external.
 
-    # Old SDK upload: ONLY the raw bytes, no mime_type
-    blob = client.com.atproto.repo.upload_blob(video_bytes)
-
-    # Correct embed format for older atproto-py:
-    # MUST be: {"video": blob.blob, "alt": ""}
     embed = {
-        "$type": "app.bsky.embed.video",
-        "video": {
-            "video": blob.blob,   # old SDK structure
-            "alt": ""
+        "$type": "app.bsky.embed.external",
+        "external": {
+            "uri": video_url,
+            "title": "Video",
+            "description": "Tumblr video"
         }
     }
 
@@ -257,7 +251,7 @@ def main():
 
         # VIDEO
         if video:
-            print("Posting VIDEO…")
+            print("Posting VIDEO (external)…")
             try:
                 post_to_bluesky_video(client, tumblr_link, video)
                 print("✔ Video posted.")
@@ -296,4 +290,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
