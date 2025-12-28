@@ -164,45 +164,41 @@ def extract_images(post):
 
 def extract_video(post):
     """
-    Extracts Tumblr video URL, supporting:
-    - NPF blocks
-    - legacy video_url
-    - player[] embeds
-    - trail HTML
+    Extracts the TRUE Tumblr MP4 URL using full NPF parsing.
     """
 
-    # Case 1 — legacy
-    if post.get("video_url"):
-        return post["video_url"]
-
-    # Case 2 — NPF "content" blocks
+    # Case 1 — NPF "content" blocks (most reliable)
     for block in post.get("content", []):
         if block.get("type") == "video":
-            # Try different ways NPF stores media
-            if block.get("url"):
+            # media array always contains the correct mp4
+            for media in block.get("media", []):
+                if "url" in media and media["url"].endswith(".mp4"):
+                    return media["url"]
+
+            # fallback if Tumblr uses 'url' directly
+            if block.get("url", "").endswith(".mp4"):
                 return block["url"]
 
-            media_list = block.get("media", [])
-            if media_list:
-                m = media_list[0]
-                if m.get("url"):
-                    return m["url"]
+    # Case 2 — legacy video_url
+    if post.get("video_url", "").endswith(".mp4"):
+        return post["video_url"]
 
-    # Case 3 — search trail HTML for .mp4
+    # Case 3 — trail HTML
     for t in post.get("trail", []):
         raw = t.get("content_raw", "")
-        match = re.search(r'src="([^"]+\.mp4)"', raw)
-        if match:
-            return match.group(1)
+        m = re.search(r'src="([^"]+\.mp4)"', raw)
+        if m:
+            return m.group(1)
 
-    # Case 4 — search legacy embed players
-    for item in post.get("player", []):
-        embed = item.get("embed_code", "")
-        match = re.search(r'src="([^"]+\.mp4)"', embed)
-        if match:
-            return match.group(1)
+    # Case 4 — embedded <video> players
+    for embed in post.get("player", []):
+        code = embed.get("embed_code", "")
+        m = re.search(r'src="([^"]+\.mp4)"', code)
+        if m:
+            return m.group(1)
 
     return None
+
 
 
 # ---------------------------------------------------------
@@ -334,6 +330,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
