@@ -119,22 +119,29 @@ def bluesky_has_posted_url(tumblr_url):
 
 
 # ---------------------------------------------------------
-#                IMAGE & VIDEO EXTRACTION
+#                IMAGE EXTRACTION
 # ---------------------------------------------------------
 
 def extract_images(post):
     urls = []
 
-    # trail HTML
+    # Case 1 — NPF blocks
+    for block in post.get("content", []):
+        if block.get("type") == "image":
+            for media in block.get("media", []):
+                if "url" in media:
+                    urls.append(media["url"])
+
+    # Case 2 — trail HTML
     for item in post.get("trail", []):
         html = item.get("content_raw") or item.get("content") or ""
         urls += re.findall(r'<img[^>]+src="([^"]+)"', html)
 
-    # body HTML
+    # Case 3 — body HTML
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # photo type
+    # Case 4 — legacy photo posts
     if post.get("type") == "photo":
         for p in post.get("photos", []):
             try:
@@ -142,6 +149,7 @@ def extract_images(post):
             except:
                 pass
 
+    # Deduplicate
     clean = []
     for u in urls:
         if u not in clean:
@@ -150,15 +158,51 @@ def extract_images(post):
     return clean[:4]
 
 
+# ---------------------------------------------------------
+#                VIDEO EXTRACTION (FULL NPF SUPPORT)
+# ---------------------------------------------------------
+
 def extract_video(post):
     """
-    Extracts Tumblr video URL (mp4).
-    Tumblr video posts contain "video_url".
+    Extracts Tumblr video URL, supporting:
+    - NPF blocks
+    - legacy video_url
+    - player[] embeds
+    - trail HTML
     """
-    if post.get("type") != "video":
-        return None
 
-    return post.get("video_url") or None
+    # Case 1 — legacy
+    if post.get("video_url"):
+        return post["video_url"]
+
+    # Case 2 — NPF "content" blocks
+    for block in post.get("content", []):
+        if block.get("type") == "video":
+            # Try different ways NPF stores media
+            if block.get("url"):
+                return block["url"]
+
+            media_list = block.get("media", [])
+            if media_list:
+                m = media_list[0]
+                if m.get("url"):
+                    return m["url"]
+
+    # Case 3 — search trail HTML for .mp4
+    for t in post.get("trail", []):
+        raw = t.get("content_raw", "")
+        match = re.search(r'src="([^"]+\.mp4)"', raw)
+        if match:
+            return match.group(1)
+
+    # Case 4 — search legacy embed players
+    for item in post.get("player", []):
+        embed = item.get("embed_code", "")
+        match = re.search(r'src="([^"]+\.mp4)"', embed)
+        if match:
+            return match.group(1)
+
+    return None
 
 
 # ---------------------------------------------------------
