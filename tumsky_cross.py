@@ -143,10 +143,29 @@ def extract_video(post):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS (FIXED)
+#                ALT TEXT + CAPTION HELPERS
 # ---------------------------------------------------------
 
-def post_to_bluesky_video(client, tumblr_url, video_url):
+def make_alt_text(post):
+    tags = post.get("tags", [])
+    if not tags:
+        return ""
+    return " ".join(tags)
+
+
+def make_post_text(tumblr_url, post):
+    caption = post.get("caption", "").strip()
+    if caption:
+        return f"({tumblr_url}) {caption}"
+    else:
+        return f"({tumblr_url})"
+
+
+# ---------------------------------------------------------
+#                BLUESKY UPLOADS WITH ALT TEXT
+# ---------------------------------------------------------
+
+def post_to_bluesky_video(client, post_text, video_url, alt_text):
     print("Downloading video…")
     data = requests.get(video_url).content
 
@@ -157,7 +176,7 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
     video_embed = {
         "$type": "app.bsky.embed.video",
         "video": blob.blob,
-        "alt": ""
+        "alt": alt_text
     }
 
     print("Posting video…")
@@ -165,19 +184,19 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
         repo=client.me.did,
         record={
             "$type": "app.bsky.feed.post",
-            "text": tumblr_url,
+            "text": post_text,
             "embed": video_embed,
             "createdAt": client.get_current_time_iso(),
         }
     )
 
 
-def post_to_bluesky_images(client, tumblr_url, image_urls):
+def post_to_bluesky_images(client, post_text, image_urls, alt_text):
     uploaded = []
     for url in image_urls:
         data = requests.get(url).content
         blob = client.com.atproto.repo.upload_blob(data)
-        uploaded.append({"image": blob.blob, "alt": ""})
+        uploaded.append({"image": blob.blob, "alt": alt_text})
 
     embed = {"$type": "app.bsky.embed.images", "images": uploaded}
 
@@ -185,70 +204,64 @@ def post_to_bluesky_images(client, tumblr_url, image_urls):
         repo=client.me.did,
         record={
             "$type": "app.bsky.feed.post",
-            "text": tumblr_url,
+            "text": post_text,
             "embed": embed,
             "createdAt": client.get_current_time_iso(),
         },
     )
 
 
-def post_to_bluesky_gif(client, tumblr_url, gif_url):
+def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
     data = requests.get(gif_url).content
     blob = client.com.atproto.repo.upload_blob(data)
 
     embed = {
         "$type": "app.bsky.embed.images",
-        "images": [{"image": blob.blob, "alt": ""}],
+        "images": [{"image": blob.blob, "alt": alt_text}],
     }
 
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
             "$type": "app.bsky.feed.post",
-            "text": tumblr_url,
+            "text": post_text,
             "embed": embed,
             "createdAt": client.get_current_time_iso(),
         },
     )
 
+
+# ---------------------------------------------------------
+#        FETCH RECENT BLUESKY POSTS TO PREVENT DUPES
+# ---------------------------------------------------------
+
 def get_recent_bsky_tumblr_ids(client):
-    """
-    Fetch the user's latest Bluesky posts and extract Tumblr post IDs
-    from any crossposted link inside the post.text field.
-    """
     print("Fetching recent Bluesky posts to avoid duplicates…")
 
     feed = client.app.bsky.feed.get_author_feed(
-        params={
-            "actor": client.me.did,
-            "limit": 50
-        }
+        params={"actor": client.me.did, "limit": 50}
     )
 
     tumblr_ids = set()
 
     for item in feed.feed:
-        record = getattr(item, "post", None)
+        post = getattr(item, "post", None)
+        if not post:
+            continue
+
+        record = getattr(post, "record", None)
         if not record:
             continue
 
-        record = getattr(record, "record", None)
-        if not record:
-            continue
-
-        # Safely extract text
         text = getattr(record, "text", "")
         if not isinstance(text, str):
             continue
 
-        # Look for Tumblr post URLs
         match = re.search(r"tumblr\.com/.+/(\d+)", text)
         if match:
             tumblr_ids.add(match.group(1))
 
     return tumblr_ids
-
-
 
 
 # ---------------------------------------------------------
@@ -260,11 +273,9 @@ def main():
 
     client = get_bsky_client()
 
-    print("Fetching recent Bluesky posts to avoid duplicates…")
     bsky_ids = get_recent_bsky_tumblr_ids(client)
     print("Found", len(bsky_ids), "existing Tumblr IDs on Bluesky.")
 
-    # Load local state
     state = load_state()
     posted_ids = state["posted_ids"]
 
@@ -279,10 +290,11 @@ def main():
     for post in posts:
         post_id = str(post.get("id"))
         tumblr_link = post.get("post_url", "").strip()
+        post_text = make_post_text(tumblr_link, post)
+        alt_text = make_alt_text(post)
 
         print("\n--- Checking Tumblr post:", post_id)
 
-        # MASTER DEDUPLICATION CHECK
         if post_id in posted_ids or post_id in bsky_ids:
             print("Already posted — skipping.")
             continue
@@ -294,7 +306,7 @@ def main():
         if video:
             print("Posting VIDEO…")
             try:
-                post_to_bluesky_video(client, tumblr_link, video)
+                post_to_bluesky_video(client, post_text, video, alt_text)
                 print("✔ Video posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -305,7 +317,7 @@ def main():
         if gif:
             print("Posting GIF…")
             try:
-                post_to_bluesky_gif(client, tumblr_link, gif)
+                post_to_bluesky_gif(client, post_text, gif, alt_text)
                 print("✔ GIF posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -316,7 +328,7 @@ def main():
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
-                post_to_bluesky_images(client, tumblr_link, images)
+                post_to_bluesky_images(client, post_text, images, alt_text)
                 print("✔ Images posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -333,8 +345,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
