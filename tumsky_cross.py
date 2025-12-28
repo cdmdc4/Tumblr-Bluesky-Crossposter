@@ -54,14 +54,17 @@ def get_latest_tumblr_post():
 
 
 # ---------------------------------------------------------
-#        BLUESKY DUPLICATE CHECK (PERFECTED)
+#        BLUESKY DUPLICATE CHECK (FIXED VERSION)
 # ---------------------------------------------------------
 
-def tumblr_id_in_bluesky_posts(post_id, limit=5):
-    """
-    Check the last 5 Bluesky posts for this Tumblr post_id.
-    This is the only reliable duplicate detection.
-    """
+def normalize_url(url):
+    if not url:
+        return ""
+    url = re.sub(r'\?.*$', "", url)
+    return url.rstrip("/")
+
+
+def bluesky_recent_posts_texts(limit=3):
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
@@ -69,23 +72,25 @@ def tumblr_id_in_bluesky_posts(post_id, limit=5):
         params={"actor": client.me.did, "limit": limit}
     )
 
+    texts = []
     for item in feed.feed:
         record = item.post.record
-        if not isinstance(record, dict):
-            continue
+        if isinstance(record, dict):
+            text = record.get("text", "").strip()
+            texts.append(text)
 
-        text = record.get("text", "")
-        if post_id in text:  # <---- The magic fix
+    return texts
+
+
+def bluesky_has_posted_url(tumblr_url):
+    """Corrected duplicate logic: checks if Tumblr URL is *contained* in recent Bsky posts."""
+    norm = normalize_url(tumblr_url)
+    recent = bluesky_recent_posts_texts()
+
+    for text in recent:
+        if norm in text:        # <------ FIXED ✔✔✔
             return True
-
     return False
-
-
-def normalize_url(url):
-    if not url:
-        return ""
-    url = re.sub(r'\?.*$', "", url)
-    return url.rstrip("/")
 
 
 # ---------------------------------------------------------
@@ -170,14 +175,13 @@ def main():
     print(f"Stored last id    : {last_post_id}")
 
     # -------------------------------------------------
-    #   PERFECT DUPLICATE CHECK (USING POST ID)
+    # FIXED DUPLICATE CHECK
     # -------------------------------------------------
-    if tumblr_id_in_bluesky_posts(post_id):
-        print("Bluesky already posted this Tumblr post. Exiting.")
+    if bluesky_has_posted_url(tumblr_link):
+        print("Bluesky already posted this link. Exiting.")
         save_state(post_id, tumblr_link)
         return
 
-    # Local duplicate check (backup)
     if post_id == last_post_id or normalize_url(tumblr_link) == normalize_url(last_post_url):
         print("No new posts. Exiting.")
         return
