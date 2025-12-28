@@ -60,20 +60,27 @@ def get_latest_tumblr_post():
 # ---------------------------------------------------------
 
 def get_latest_bluesky_post_url():
+    """Returns the text of the latest Bluesky post (or None)."""
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
+    # Correct modern API call
     feed = client.app.bsky.feed.get_author_feed(
-        actor=client.me.did,
-        limit=1
+        params={
+            "actor": client.me.did,
+            "limit": 1
+        }
     )
 
-    posts = feed.data.feed
-    if not posts:
+    items = feed.feed
+    if not items:
         return None
 
-    post = posts[0]["post"]
-    return post.get("record", {}).get("text", "").strip()
+    record = items[0].post.record
+    if not isinstance(record, dict):
+        return None
+
+    return record.get("text", "").strip()
 
 
 # ---------------------------------------------------------
@@ -115,7 +122,7 @@ def extract_all_images(post):
 
 def post_to_bluesky_multi(tumblr_url, image_urls):
     client = Client()
-    client.login(BSKY_HANDLE, BSKY_PASSWORD)
+    client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
     uploaded = []
     for url in image_urls:
@@ -195,6 +202,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
