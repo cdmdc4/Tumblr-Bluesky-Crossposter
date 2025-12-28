@@ -60,20 +60,20 @@ def get_latest_tumblr_post():
 # ---------------------------------------------------------
 
 def get_latest_bluesky_post_url():
-    """Gets the latest Bluesky post text so we can detect duplicates."""
     client = Client()
-    client.login(BSKY_HANDLE, BSKY_PASSWORD)
+    client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
-    feed = client.app.bsky.feed.getAuthorFeed(
+    feed = client.app.bsky.feed.get_author_feed(
         actor=client.me.did,
         limit=1
     )
 
-    try:
-        last_post = feed['feed'][0]['post']
-        return last_post['record']['text'].strip()
-    except:
+    posts = feed.data.feed
+    if not posts:
         return None
+
+    post = posts[0]["post"]
+    return post.get("record", {}).get("text", "").strip()
 
 
 # ---------------------------------------------------------
@@ -195,4 +195,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
