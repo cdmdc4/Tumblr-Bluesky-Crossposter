@@ -18,24 +18,27 @@ STATE_FILE = "tumblr_state.json"
 
 
 # ---------------------------------------------------------
-#                STATE MANAGEMENT
+#                STATE MANAGEMENT (A2: FULL RESET)
 # ---------------------------------------------------------
 
 def load_state():
     try:
         with open(STATE_FILE, "r") as f:
             data = json.load(f)
-            return {
-                "last_post_id": str(data.get("last_post_id")) if data.get("last_post_id") else None,
-                "last_post_url": data.get("last_post_url"),
-            }
+            if isinstance(data, dict) and "posted_ids" in data:
+                return data
+            else:
+                # A2 reset: ignore old format & create blank state
+                return {"posted_ids": []}
     except FileNotFoundError:
-        return {"last_post_id": None, "last_post_url": None}
+        return {"posted_ids": []}
 
 
-def save_state(post_id, post_url):
+def save_state(state):
+    # Always keep the last 500 IDs max
+    state["posted_ids"] = state["posted_ids"][-500:]
     with open(STATE_FILE, "w") as f:
-        json.dump({"last_post_id": str(post_id), "last_post_url": post_url}, f)
+        json.dump(state, f, indent=2)
 
 
 # ---------------------------------------------------------
@@ -65,10 +68,11 @@ def normalize_url(url):
 
 
 # ---------------------------------------------------------
-#          BLUESKY DUPLICATE CHECK
+#                BLUESKY DUPLICATE CHECK
 # ---------------------------------------------------------
 
 def bluesky_has_posted_url(tumblr_url):
+    """This is now only a fallback. ID-based dedupe is primary."""
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
     did = client.me.did
@@ -137,7 +141,7 @@ def extract_images(post):
 def extract_gif(post):
     all_imgs = extract_images(post)
     for url in all_imgs:
-        if url.endswith(".gif"):
+        if url.lower().endswith(".gif"):
             return url
     return None
 
@@ -179,7 +183,7 @@ def extract_video(post):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOAD FUNCTIONS
+#                BLUESKY UPLOADS
 # ---------------------------------------------------------
 
 def post_to_bluesky_images(tumblr_url, image_urls):
@@ -210,7 +214,7 @@ def post_to_bluesky_images(tumblr_url, image_urls):
 
 def post_to_bluesky_gif(tumblr_url, gif_url):
     client = Client()
-    client.login(BSKY_USERNAME, BSKY_PASSWORD)
+    client.login(BSKKY_USERNAME, BSKY_PASSWORD)
 
     resp = requests.get(gif_url)
     gif_bytes = resp.content
@@ -218,9 +222,7 @@ def post_to_bluesky_gif(tumblr_url, gif_url):
 
     embed = {
         "$type": "app.bsky.embed.images",
-        "images": [
-            {"image": blob.blob, "alt": ""}
-        ],
+        "images": [{"image": blob.blob, "alt": ""}],
     }
 
     return client.app.bsky.feed.post.create(
@@ -265,7 +267,7 @@ def post_to_bluesky_video(tumblr_url, video_url):
 # ---------------------------------------------------------
 
 def main():
-    print("Running Tumblr → Bluesky check…")
+    print("Running Tumblr → Bluesky crossposter…")
 
     posts = get_recent_tumblr_posts()
     if not posts:
@@ -274,7 +276,7 @@ def main():
 
     posts = sorted(posts, key=lambda p: int(p["id"]))  # oldest → newest
     state = load_state()
-    last_post_id = state["last_post_id"]
+    posted_ids = state["posted_ids"]
 
     for post in posts:
         post_id = str(post.get("id_string") or post.get("id"))
@@ -282,14 +284,9 @@ def main():
 
         print("\n--- Checking Tumblr post:", post_id)
 
-        # Local skip
-        if last_post_id and int(post_id) <= int(last_post_id):
-            print("Already handled locally — skipping.")
-            continue
-
-        # Bluesky duplicate skip
-        if bluesky_has_posted_url(tumblr_link):
-            print("Already posted on Bluesky — skipping.")
+        # Skip if already posted (primary dedupe)
+        if post_id in posted_ids:
+            print("Already posted (ID match) — skipping.")
             continue
 
         # Extract media
@@ -297,40 +294,45 @@ def main():
         gif = extract_gif(post)
         images = extract_images(post)
 
-        # Skip text posts
+        # Skip text-only posts
         if not video and not gif and not images:
             print("Text-only post — skipping.")
+            posted_ids.append(post_id)
+            save_state(state)
             continue
 
-        # Video takes priority
+        # VIDEO first
         if video:
-            print("Posting VIDEO to Bluesky…")
+            print("Posting VIDEO…")
             try:
                 post_to_bluesky_video(tumblr_link, video)
-                print("✔ Posted video.")
-                save_state(post_id, tumblr_link)
+                print("✔ Video posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Video error:", e)
             continue
 
-        # GIF next
+        # GIF second
         if gif:
-            print("Posting GIF to Bluesky…")
+            print("Posting GIF…")
             try:
                 post_to_bluesky_gif(tumblr_link, gif)
-                print("✔ Posted GIF.")
-                save_state(post_id, tumblr_link)
+                print("✔ GIF posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ GIF error:", e)
             continue
 
-        # Images last
+        # IMAGES last
         if images:
-            print(f"Posting {len(images)} IMAGES to Bluesky…")
+            print(f"Posting {len(images)} IMAGES…")
             try:
                 post_to_bluesky_images(tumblr_link, images)
-                print("✔ Posted images.")
-                save_state(post_id, tumblr_link)
+                print("✔ Images posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Image error:", e)
             continue
