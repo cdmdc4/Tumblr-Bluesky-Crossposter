@@ -39,11 +39,11 @@ def save_state(post_id, post_url):
 
 
 # ---------------------------------------------------------
-#                TUMBLR API (FETCH LAST 5 POSTS)
+#                TUMBLR API (FETCH LAST 10 POSTS)
 # ---------------------------------------------------------
 
 def get_recent_tumblr_posts():
-    url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=5"
+    url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=10"
     resp = requests.get(url)
     data = resp.json()
 
@@ -76,7 +76,7 @@ def bluesky_has_posted_url(tumblr_url):
     norm = normalize_url(tumblr_url)
 
     try:
-        feed = client.app.bsky.feed.get_author_feed(params={"actor": did, "limit": 10})
+        feed = client.app.bsky.feed.get_author_feed(params={"actor": did, "limit": 25})
     except Exception as e:
         print("Error fetching Bluesky feed:", e)
         return False
@@ -133,7 +133,7 @@ def extract_images(post):
 
 
 # ---------------------------------------------------------
-#                VIDEO EXTRACTION (FIXED)
+#                VIDEO EXTRACTION
 # ---------------------------------------------------------
 
 def extract_video(post):
@@ -158,7 +158,7 @@ def extract_video(post):
         if m:
             return m.group(1)
 
-    # Case 4 — embedded <video>
+    # Case 4 — <video> embed
     for embed in post.get("player", []):
         code = embed.get("embed_code", "")
         m = re.search(r'src="([^"]+\.mp4)"', code)
@@ -228,7 +228,7 @@ def post_to_bluesky_video(tumblr_url, video_url):
 
 
 # ---------------------------------------------------------
-#                MAIN (PROCESS 5 POSTS)
+#                      MAIN LOGIC
 # ---------------------------------------------------------
 
 def main():
@@ -243,7 +243,7 @@ def main():
     state = load_state()
     last_post_id = state["last_post_id"]
 
-    # We process oldest → newest
+    # Process posts oldest → newest
     posts = sorted(posts, key=lambda p: int(p["id"]))
 
     for post in posts:
@@ -257,7 +257,7 @@ def main():
             print("Already handled locally. Skipping.")
             continue
 
-        # Skip if found on Bluesky
+        # Skip if already on Bluesky
         if bluesky_has_posted_url(tumblr_link):
             print("Already on Bluesky. Skipping.")
             continue
@@ -266,7 +266,7 @@ def main():
         video = extract_video(post)
         images = extract_images(post)
 
-        # Skip text posts (no media)
+        # Skip text-only posts
         if not video and not images:
             print("Text post detected — skipping.")
             continue
