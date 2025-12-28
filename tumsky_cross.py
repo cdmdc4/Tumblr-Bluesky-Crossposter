@@ -190,16 +190,20 @@ def post_to_bluesky_gif(client, tumblr_url, gif_url):
 
 
 def post_to_bluesky_video(client, tumblr_url, video_url):
+    # Download MP4
     video_bytes = requests.get(video_url).content
 
-    # Correct upload (Bluesky requires MIME!)
-    blob = client.com.atproto.repo.upload_blob(video_bytes, mime_type="video/mp4")
+    # Old SDK upload: ONLY the raw bytes, no mime_type
+    blob = client.com.atproto.repo.upload_blob(video_bytes)
 
-    # Correct ATProto embed structure
+    # Correct embed format for older atproto-py:
+    # MUST be: {"video": blob.blob, "alt": ""}
     embed = {
         "$type": "app.bsky.embed.video",
-        "video": blob.blob,     # MUST be the blob ref, NOT nested incorrectly
-        "alt": ""
+        "video": {
+            "video": blob.blob,   # old SDK structure
+            "alt": ""
+        }
     }
 
     return client.app.bsky.feed.post.create(
@@ -292,3 +296,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
