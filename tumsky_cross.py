@@ -7,10 +7,8 @@ from atproto import Client
 #                CONFIGURATION
 # ---------------------------------------------------------
 
-import os
-
 TUMBLR_API_KEY = os.getenv("TUMBLR_API_KEY")
-TUMBLR_BLOG = os.getenv("TUMBLR_BLOG")
+TUMBLR_BLOG = os.getenv("TUMBLR_BLOG_IDENTIFIER")
 
 BSKY_HANDLE = os.getenv("BSKY_USERNAME")
 BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
@@ -52,6 +50,27 @@ def get_latest_tumblr_post():
 
     try:
         return data["response"]["posts"][0]
+    except:
+        return None
+
+
+# ---------------------------------------------------------
+#                BLUESKY CHECKING
+# ---------------------------------------------------------
+
+def get_latest_bluesky_post_url():
+    """Gets the latest Bluesky post text so we can detect duplicates."""
+    client = Client()
+    client.login(BSKY_HANDLE, BSKY_PASSWORD)
+
+    feed = client.app.bsky.feed.getAuthorFeed(
+        actor=client.me.did,
+        limit=1
+    )
+
+    try:
+        last_post = feed['feed'][0]['post']
+        return last_post['record']['text'].strip()
     except:
         return None
 
@@ -135,14 +154,24 @@ def main():
         print("❌ Could not fetch Tumblr post.")
         return
 
-    # Tumblr sometimes uses id_string
     post_id = str(post.get("id_string") or post.get("id"))
     tumblr_link = post.get("post_url", "").strip()
 
-    print("Latest Tumblr post:", post_id)
-    print("Stored last post:", last_post_id)
+    print(f"Latest Tumblr post: {post_id}")
+    print(f"Stored last id    : {last_post_id}")
 
-    # Duplicate protection
+    # -------------------------------------------------
+    # CHECK BLUESKY LATEST POST TO PREVENT DUPLICATES
+    # -------------------------------------------------
+    latest_bsky_text = get_latest_bluesky_post_url()
+    print("Last Bluesky post text:", latest_bsky_text)
+
+    if latest_bsky_text and tumblr_link in latest_bsky_text:
+        print("Bluesky already has this Tumblr link. Exiting.")
+        save_state(post_id, tumblr_link)
+        return
+
+    # Normal duplicate check (local state)
     if post_id == last_post_id or tumblr_link == last_post_url:
         print("No new posts. Exiting.")
         return
@@ -165,4 +194,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
