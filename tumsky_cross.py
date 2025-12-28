@@ -7,13 +7,13 @@ from atproto import Client
 #                CONFIGURATION
 # ---------------------------------------------------------
 
-TUMBLR_API_KEY = "X15BoaWTNM4BTyeRFKA3lD3Z5dleZMftRkir19CGcoErakJgQ3"
-TUMBLR_BLOG = "heartburns4ff.tumblr.com"
+import os
 
-BSKY_HANDLE = "heartburns4ff.bsky.social"
-BSKY_PASSWORD = "npvd-wutz-fzpl-6w66"
+TUMBLR_API_KEY = os.getenv("TUMBLR_API_KEY")
+TUMBLR_BLOG = os.getenv("TUMBLR_BLOG_IDENTIFIER")
 
-STATE_FILE = "tumblr_state.json"
+BSKY_HANDLE = os.getenv("BSKY_USERNAME")
+BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 
 
 # ---------------------------------------------------------
