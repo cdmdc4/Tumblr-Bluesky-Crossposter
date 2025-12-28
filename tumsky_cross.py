@@ -194,21 +194,20 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
     print("Downloading video…")
     video_bytes = requests.get(video_url).content
 
-    # 1. Upload blob
     print("Uploading blob…")
     blob = client.com.atproto.repo.upload_blob(video_bytes)
 
-    # 2. Start video processing job
     print("Starting Bluesky video processing…")
     job = client.app.bsky.video.upload_video(
-        blob=blob.blob,          # the blob reference
-        encoding="video/mp4"     # required by Bluesky API
+        data=video_bytes,        # REQUIRED in atproto 0.0.65
+        blob=blob.blob,          # The blob reference
+        encoding="video/mp4"     # Required
     )
 
     job_id = job.jobId
 
-    # 3. Poll until processing is done
     print("Waiting for Bluesky video transcoding…")
+    import time
     while True:
         status = client.app.bsky.video.get_upload_status(job_id)
         state = status.jobStatus
@@ -217,11 +216,9 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
             break
         elif state == "failed":
             raise Exception("Bluesky video processing failed.")
-        else:
-            import time
-            time.sleep(2)
+        time.sleep(2)
 
-    # 4. Build final video embed
+    print("Posting to Bluesky…")
     embed = {
         "$type": "app.bsky.embed.video",
         "video": {
@@ -230,8 +227,6 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
         }
     }
 
-    # 5. Create Bluesky post
-    print("Posting to Bluesky…")
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
@@ -241,6 +236,7 @@ def post_to_bluesky_video(client, tumblr_url, video_url):
             "createdAt": client.get_current_time_iso(),
         },
     )
+
 
 
 
@@ -323,4 +319,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
