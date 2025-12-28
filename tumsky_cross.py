@@ -2,6 +2,8 @@ import os
 import json
 import re
 import requests
+import subprocess
+import tempfile
 from atproto import Client
 
 # ---------------------------------------------------------
@@ -43,7 +45,6 @@ def load_state():
 
 
 def save_state(state):
-    # Keep last 500 post IDs
     state["posted_ids"] = state["posted_ids"][-500:]
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
@@ -64,7 +65,6 @@ def get_recent_tumblr_posts():
     except:
         return []
 
-    # Deduplicate by ID
     seen = set()
     clean = []
     for p in posts:
@@ -162,6 +162,60 @@ def make_post_text(tumblr_url, post):
 
 
 # ---------------------------------------------------------
+#         GIF → MP4 Conversion (FFmpeg)
+# ---------------------------------------------------------
+
+def convert_gif_to_mp4(gif_bytes):
+    """
+    Convert GIF → MP4 using FFmpeg.
+    Returns mp4_bytes or None if failed or too large.
+    """
+
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif_file:
+        gif_file.write(gif_bytes)
+        gif_path = gif_file.name
+
+    mp4_path = gif_path.replace(".gif", ".mp4")
+
+    # ffmpeg command:
+    # - loop once
+    # - H.264 baseline
+    # - 720p max height
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", gif_path,
+        "-movflags", "faststart",
+        "-vf", "scale=-1:720:force_original_aspect_ratio=decrease",
+        "-pix_fmt", "yuv420p",
+        "-vcodec", "libx264",
+        "-preset", "veryfast",
+        "-an",
+        mp4_path,
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception as e:
+        print("FFmpeg conversion failed:", e)
+        return None
+
+    # Read MP4 back
+    try:
+        with open(mp4_path, "rb") as f:
+            mp4_data = f.read()
+    except:
+        return None
+
+    # Bluesky limit
+    if len(mp4_data) > 900_000:
+        print("MP4 still too large after compression.")
+        return None
+
+    return mp4_data
+
+
+# ---------------------------------------------------------
 #                BLUESKY UPLOADS WITH ALT TEXT
 # ---------------------------------------------------------
 
@@ -172,14 +226,12 @@ def post_to_bluesky_video(client, post_text, video_url, alt_text):
     print("Uploading blob…")
     blob = client.com.atproto.repo.upload_blob(data)
 
-    print("Creating video embed…")
     video_embed = {
         "$type": "app.bsky.embed.video",
         "video": blob.blob,
         "alt": alt_text
     }
 
-    print("Posting video…")
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
@@ -212,8 +264,37 @@ def post_to_bluesky_images(client, post_text, image_urls, alt_text):
 
 
 def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
-    data = requests.get(gif_url).content
-    blob = client.com.atproto.repo.upload_blob(data)
+    print("Downloading GIF…")
+    gif_data = requests.get(gif_url).content
+
+    if len(gif_data) > 900_000:
+        print("GIF too large — converting to MP4…")
+        mp4_data = convert_gif_to_mp4(gif_data)
+        if mp4_data is None:
+            print("❌ GIF could not be converted — skipping.")
+            return None
+
+        print("Uploading MP4…")
+        blob = client.com.atproto.repo.upload_blob(mp4_data)
+
+        video_embed = {
+            "$type": "app.bsky.embed.video",
+            "video": blob.blob,
+            "alt": alt_text
+        }
+
+        return client.app.bsky.feed.post.create(
+            repo=client.me.did,
+            record={
+                "$type": "app.bsky.feed.post",
+                "text": post_text,
+                "embed": video_embed,
+                "createdAt": client.get_current_time_iso(),
+            }
+        )
+
+    # If GIF is small enough (<900KB), upload as image
+    blob = client.com.atproto.repo.upload_blob(gif_data)
 
     embed = {
         "$type": "app.bsky.embed.images",
@@ -236,8 +317,6 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
 # ---------------------------------------------------------
 
 def get_recent_bsky_tumblr_ids(client):
-    print("Fetching recent Bluesky posts to avoid duplicates…")
-
     feed = client.app.bsky.feed.get_author_feed(
         params={"actor": client.me.did, "limit": 50}
     )
@@ -315,10 +394,11 @@ def main():
             continue
 
         if gif:
-            print("Posting GIF…")
+            print("Processing GIF…")
             try:
-                post_to_bluesky_gif(client, post_text, gif, alt_text)
-                print("✔ GIF posted.")
+                result = post_to_bluesky_gif(client, post_text, gif, alt_text)
+                if result:
+                    print("✔ GIF posted.")
                 posted_ids.append(post_id)
                 save_state(state)
             except Exception as e:
