@@ -22,7 +22,6 @@ STATE_FILE = "tumblr_state.json"
 # ---------------------------------------------------------
 
 def load_state():
-    """Load last_post_id + last_post_url, safe defaults."""
     try:
         with open(STATE_FILE, "r") as f:
             data = json.load(f)
@@ -35,7 +34,6 @@ def load_state():
 
 
 def save_state(post_id, post_url):
-    """Write new state after successful posting."""
     with open(STATE_FILE, "w") as f:
         json.dump({"last_post_id": str(post_id), "last_post_url": post_url}, f)
 
@@ -56,31 +54,44 @@ def get_latest_tumblr_post():
 
 
 # ---------------------------------------------------------
-#                BLUESKY CHECKING
+#        BLUESKY DUPLICATE CHECK (IMPROVED)
 # ---------------------------------------------------------
 
-def get_latest_bluesky_post_url():
-    """Returns the text of the latest Bluesky post (or None)."""
+def normalize_url(url):
+    if not url:
+        return ""
+    url = re.sub(r'\?.*$', "", url)  # remove query params
+    return url.rstrip("/")           # remove trailing slash
+
+
+def bluesky_recent_posts_texts(limit=3):
+    """Return last 3 Bluesky post texts."""
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
-    # Correct modern API call
     feed = client.app.bsky.feed.get_author_feed(
-        params={
-            "actor": client.me.did,
-            "limit": 1
-        }
+        params={"actor": client.me.did, "limit": limit}
     )
 
-    items = feed.feed
-    if not items:
-        return None
+    texts = []
+    for item in feed.feed:
+        record = item.post.record
+        if isinstance(record, dict):
+            text = record.get("text", "").strip()
+            texts.append(text)
 
-    record = items[0].post.record
-    if not isinstance(record, dict):
-        return None
+    return texts
 
-    return record.get("text", "").strip()
+
+def bluesky_has_posted_url(tumblr_url):
+    """Checks last 3 Bluesky posts for this Tumblr link."""
+    norm = normalize_url(tumblr_url)
+    recent = bluesky_recent_posts_texts()
+
+    for text in recent:
+        if normalize_url(text) == norm:
+            return True
+    return False
 
 
 # ---------------------------------------------------------
@@ -107,13 +118,13 @@ def extract_all_images(post):
             except:
                 pass
 
-    # Remove duplicates but preserve order
+    # Deduplicate while preserving order
     clean = []
     for u in urls:
         if u not in clean:
             clean.append(u)
 
-    return clean[:4]  # Bluesky max = 4 images
+    return clean[:4]  # Bluesky maximum
 
 
 # ---------------------------------------------------------
@@ -147,7 +158,7 @@ def post_to_bluesky_multi(tumblr_url, image_urls):
 
 
 # ---------------------------------------------------------
-#                MAIN (ONE-TIME RUN)
+#                MAIN
 # ---------------------------------------------------------
 
 def main():
@@ -169,18 +180,15 @@ def main():
     print(f"Stored last id    : {last_post_id}")
 
     # -------------------------------------------------
-    # CHECK BLUESKY LATEST POST TO PREVENT DUPLICATES
+    # IMPROVED BLUESKY DUPLICATE CHECK
     # -------------------------------------------------
-    latest_bsky_text = get_latest_bluesky_post_url()
-    print("Last Bluesky post text:", latest_bsky_text)
-
-    if latest_bsky_text and tumblr_link in latest_bsky_text:
-        print("Bluesky already has this Tumblr link. Exiting.")
+    if bluesky_has_posted_url(tumblr_link):
+        print("Bluesky already posted this link. Exiting.")
         save_state(post_id, tumblr_link)
         return
 
-    # Normal duplicate check (local state)
-    if post_id == last_post_id or tumblr_link == last_post_url:
+    # Local state duplicate check
+    if post_id == last_post_id or normalize_url(tumblr_link) == normalize_url(last_post_url):
         print("No new posts. Exiting.")
         return
 
