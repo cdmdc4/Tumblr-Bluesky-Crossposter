@@ -242,9 +242,9 @@ def post_to_bluesky_video(tumblr_url, video_url):
 
     resp = requests.get(video_url)
     video_bytes = resp.content
-    mime = resp.headers.get("Content-Type", "video/mp4")
 
-    blob = client.com.atproto.repo.upload_blob(video_bytes, mime_type=mime)
+    # OLD-VERSION COMPATIBLE: upload without mime_type=
+    blob = client.com.atproto.repo.upload_blob(video_bytes)
 
     embed = {
         "$type": "app.bsky.embed.video",
@@ -260,6 +260,8 @@ def post_to_bluesky_video(tumblr_url, video_url):
             "createdAt": client.get_current_time_iso(),
         },
     )
+
+
 
 
 # ---------------------------------------------------------
@@ -342,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
