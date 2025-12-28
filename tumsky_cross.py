@@ -54,7 +54,7 @@ def get_latest_tumblr_post():
 
 
 # ---------------------------------------------------------
-#        BLUESKY DUPLICATE CHECK (FIXED VERSION)
+#        BLUESKY DUPLICATE CHECK (FINAL, ROBUST)
 # ---------------------------------------------------------
 
 def normalize_url(url):
@@ -64,32 +64,51 @@ def normalize_url(url):
     return url.rstrip("/")
 
 
-def bluesky_recent_posts_texts(limit=3):
+def bluesky_has_posted_url(tumblr_url):
+    """Check ALL possible Bluesky locations where a Tumblr link could be stored."""
+    norm = normalize_url(tumblr_url)
+
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
     feed = client.app.bsky.feed.get_author_feed(
-        params={"actor": client.me.did, "limit": limit}
+        params={"actor": client.me.did, "limit": 5}
     )
 
-    texts = []
     for item in feed.feed:
         record = item.post.record
+
+        # 1. TEXT FIELD
         if isinstance(record, dict):
-            text = record.get("text", "").strip()
-            texts.append(text)
+            text = record.get("text", "")
+            if norm in text:
+                return True
 
-    return texts
+        # 2. EMBED: external link
+        embed = record.get("embed")
+        if embed:
 
+            if embed.get("$type") == "app.bsky.embed.external":
+                uri = embed["external"].get("uri", "")
+                if normalize_url(uri) == norm:
+                    return True
 
-def bluesky_has_posted_url(tumblr_url):
-    """Corrected duplicate logic: checks if Tumblr URL is *contained* in recent Bsky posts."""
-    norm = normalize_url(tumblr_url)
-    recent = bluesky_recent_posts_texts()
+            # 3. EMBED: image captions
+            if embed.get("$type") == "app.bsky.embed.images":
+                for img in embed.get("images", []):
+                    alt = img.get("alt", "")
+                    if norm in alt:
+                        return True
 
-    for text in recent:
-        if norm in text:        # <------ FIXED ✔✔✔
-            return True
+        # 4. FACETS (rich text links)
+        if "facets" in record:
+            for facet in record["facets"]:
+                for feature in facet.get("features", []):
+                    if feature.get("$type") == "app.bsky.richtext.facet#link":
+                        uri = feature.get("uri", "")
+                        if normalize_url(uri) == norm:
+                            return True
+
     return False
 
 
@@ -153,7 +172,7 @@ def post_to_bluesky_multi(tumblr_url, image_urls):
 
 
 # ---------------------------------------------------------
-#                MAIN
+#                MAIN LOGIC
 # ---------------------------------------------------------
 
 def main():
@@ -174,14 +193,13 @@ def main():
     print(f"Latest Tumblr post: {post_id}")
     print(f"Stored last id    : {last_post_id}")
 
-    # -------------------------------------------------
-    # FIXED DUPLICATE CHECK
-    # -------------------------------------------------
+    # FULL robust duplicate check
     if bluesky_has_posted_url(tumblr_link):
-        print("Bluesky already posted this link. Exiting.")
+        print("Bluesky already posted this Tumblr link. Exiting.")
         save_state(post_id, tumblr_link)
         return
 
+    # Local file duplicate check
     if post_id == last_post_id or normalize_url(tumblr_link) == normalize_url(last_post_url):
         print("No new posts. Exiting.")
         return
