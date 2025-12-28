@@ -264,6 +264,10 @@ def main():
     bsky_ids = get_recent_bsky_tumblr_ids(client)
     print("Found", len(bsky_ids), "existing Tumblr IDs on Bluesky.")
 
+    # Load local state
+    state = load_state()
+    posted_ids = state["posted_ids"]
+
     posts = get_recent_tumblr_posts()
     if not posts:
         print("❌ No Tumblr posts found.")
@@ -278,8 +282,9 @@ def main():
 
         print("\n--- Checking Tumblr post:", post_id)
 
-        if post_id in bsky_ids:
-            print("Already posted on Bluesky — skipping.")
+        # MASTER DEDUPLICATION CHECK
+        if post_id in posted_ids or post_id in bsky_ids:
+            print("Already posted — skipping.")
             continue
 
         video = extract_video(post)
@@ -291,6 +296,8 @@ def main():
             try:
                 post_to_bluesky_video(client, tumblr_link, video)
                 print("✔ Video posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Video error:", e)
             continue
@@ -300,6 +307,8 @@ def main():
             try:
                 post_to_bluesky_gif(client, tumblr_link, gif)
                 print("✔ GIF posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ GIF error:", e)
             continue
@@ -309,17 +318,22 @@ def main():
             try:
                 post_to_bluesky_images(client, tumblr_link, images)
                 print("✔ Images posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Image error:", e)
             continue
 
         print("Nothing postable — skipping.")
+        posted_ids.append(post_id)
+        save_state(state)
 
     print("\nDone!")
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
