@@ -18,7 +18,17 @@ STATE_FILE = "tumblr_state.json"
 
 
 # ---------------------------------------------------------
-#                STATE MANAGEMENT (A2: FULL RESET)
+#                UTIL: BLUESKY CLIENT (single login)
+# ---------------------------------------------------------
+
+def get_bsky_client():
+    client = Client()
+    client.login(BSKY_USERNAME, BSKY_PASSWORD)
+    return client
+
+
+# ---------------------------------------------------------
+#                STATE MANAGEMENT
 # ---------------------------------------------------------
 
 def load_state():
@@ -27,15 +37,12 @@ def load_state():
             data = json.load(f)
             if isinstance(data, dict) and "posted_ids" in data:
                 return data
-            else:
-                # A2 reset: ignore old format & create blank state
-                return {"posted_ids": []}
+            return {"posted_ids": []}
     except FileNotFoundError:
         return {"posted_ids": []}
 
 
 def save_state(state):
-    # Always keep the last 500 IDs max
     state["posted_ids"] = state["posted_ids"][-500:]
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
@@ -49,7 +56,6 @@ def get_recent_tumblr_posts():
     url = f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts?api_key={TUMBLR_API_KEY}&limit=30"
     resp = requests.get(url)
     data = resp.json()
-
     try:
         return data["response"]["posts"]
     except:
@@ -57,51 +63,13 @@ def get_recent_tumblr_posts():
 
 
 # ---------------------------------------------------------
-#                URL NORMALIZATION
-# ---------------------------------------------------------
-
-def normalize_url(url):
-    if not url:
-        return ""
-    url = re.sub(r'\?.*$', "", url)
-    return url.rstrip("/")
-
-
-# ---------------------------------------------------------
-#                BLUESKY DUPLICATE CHECK
-# ---------------------------------------------------------
-
-def bluesky_has_posted_url(tumblr_url):
-    """This is now only a fallback. ID-based dedupe is primary."""
-    client = Client()
-    client.login(BSKY_USERNAME, BSKY_PASSWORD)
-    did = client.me.did
-
-    norm = normalize_url(tumblr_url)
-
-    try:
-        feed = client.app.bsky.feed.get_author_feed(params={"actor": did, "limit": 25})
-    except Exception as e:
-        print("Error fetching Bluesky feed:", e)
-        return False
-
-    for item in feed.feed:
-        record = item.post.record
-        text = getattr(record, "text", "") or ""
-        if norm in text:
-            return True
-
-    return False
-
-
-# ---------------------------------------------------------
-#                IMAGE EXTRACTION
+#                MEDIA EXTRACTORS
 # ---------------------------------------------------------
 
 def extract_images(post):
     urls = []
 
-    # NPF images
+    # NPF blocks
     for block in post.get("content", []):
         if block.get("type") == "image":
             for media in block.get("media", []):
@@ -117,7 +85,7 @@ def extract_images(post):
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # Legacy photo posts
+    # Legacy
     if post.get("type") == "photo":
         for p in post.get("photos", []):
             try:
@@ -125,7 +93,6 @@ def extract_images(post):
             except:
                 pass
 
-    # Deduplicate
     clean = []
     for u in urls:
         if u not in clean:
@@ -134,30 +101,20 @@ def extract_images(post):
     return clean[:4]
 
 
-# ---------------------------------------------------------
-#                GIF EXTRACTION
-# ---------------------------------------------------------
-
 def extract_gif(post):
-    all_imgs = extract_images(post)
-    for url in all_imgs:
+    for url in extract_images(post):
         if url.lower().endswith(".gif"):
             return url
     return None
 
 
-# ---------------------------------------------------------
-#                VIDEO EXTRACTION
-# ---------------------------------------------------------
-
 def extract_video(post):
-    # NPF video blocks
+    # NPF
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
-                if "url" in media and media["url"].endswith(".mp4"):
+                if media.get("url", "").endswith(".mp4"):
                     return media["url"]
-
             if block.get("url", "").endswith(".mp4"):
                 return block["url"]
 
@@ -172,7 +129,7 @@ def extract_video(post):
         if m:
             return m.group(1)
 
-    # Player embeds
+    # Embed_code
     for embed in post.get("player", []):
         code = embed.get("embed_code", "")
         m = re.search(r'src="([^"]+\.mp4)"', code)
@@ -183,22 +140,22 @@ def extract_video(post):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS
+#                BLUESKY UPLOADS (2025-compliant)
 # ---------------------------------------------------------
 
-def post_to_bluesky_images(tumblr_url, image_urls):
-    client = Client()
-    client.login(BSKY_USERNAME, BSKY_PASSWORD)
-
+def post_to_bluesky_images(client, tumblr_url, image_urls):
     uploaded = []
     for url in image_urls:
-        img = requests.get(url).content
-        blob = client.com.atproto.repo.upload_blob(img)
-        uploaded.append({"image": blob.blob, "alt": ""})
+        data = requests.get(url).content
+        blob = client.com.atproto.repo.upload_blob(data)
+        uploaded.append({
+            "image": blob.blob,   # correct format for SDK 2025
+            "alt": ""
+        })
 
     embed = {
         "$type": "app.bsky.embed.images",
-        "images": uploaded,
+        "images": uploaded
     }
 
     return client.app.bsky.feed.post.create(
@@ -212,13 +169,9 @@ def post_to_bluesky_images(tumblr_url, image_urls):
     )
 
 
-def post_to_bluesky_gif(tumblr_url, gif_url):
-    client = Client()
-    client.login(BSKKY_USERNAME, BSKY_PASSWORD)
-
-    resp = requests.get(gif_url)
-    gif_bytes = resp.content
-    blob = client.com.atproto.repo.upload_blob(gif_bytes, mime_type="image/gif")
+def post_to_bluesky_gif(client, tumblr_url, gif_url):
+    data = requests.get(gif_url).content
+    blob = client.com.atproto.repo.upload_blob(data, mime_type="image/gif")
 
     embed = {
         "$type": "app.bsky.embed.images",
@@ -236,19 +189,17 @@ def post_to_bluesky_gif(tumblr_url, gif_url):
     )
 
 
-def post_to_bluesky_video(tumblr_url, video_url):
-    client = Client()
-    client.login(BSKY_USERNAME, BSKY_PASSWORD)
+def post_to_bluesky_video(client, tumblr_url, video_url):
+    video_bytes = requests.get(video_url).content
 
-    resp = requests.get(video_url)
-    video_bytes = resp.content
+    # Correct upload (Bluesky requires MIME!)
+    blob = client.com.atproto.repo.upload_blob(video_bytes, mime_type="video/mp4")
 
-    # OLD-VERSION COMPATIBLE: upload without mime_type=
-    blob = client.com.atproto.repo.upload_blob(video_bytes)
-
+    # Correct ATProto embed structure
     embed = {
         "$type": "app.bsky.embed.video",
-        "video": {"video": blob.blob, "alt": ""},
+        "video": blob.blob,     # MUST be the blob ref, NOT nested incorrectly
+        "alt": ""
     }
 
     return client.app.bsky.feed.post.create(
@@ -262,8 +213,6 @@ def post_to_bluesky_video(tumblr_url, video_url):
     )
 
 
-
-
 # ---------------------------------------------------------
 #                     MAIN LOGIC
 # ---------------------------------------------------------
@@ -271,12 +220,14 @@ def post_to_bluesky_video(tumblr_url, video_url):
 def main():
     print("Running Tumblr → Bluesky crossposter…")
 
+    client = get_bsky_client()
+
     posts = get_recent_tumblr_posts()
     if not posts:
         print("❌ No Tumblr posts found.")
         return
 
-    posts = sorted(posts, key=lambda p: int(p["id"]))  # oldest → newest
+    posts = sorted(posts, key=lambda p: int(p["id"]))
     state = load_state()
     posted_ids = state["posted_ids"]
 
@@ -286,28 +237,25 @@ def main():
 
         print("\n--- Checking Tumblr post:", post_id)
 
-        # Skip if already posted (primary dedupe)
         if post_id in posted_ids:
-            print("Already posted (ID match) — skipping.")
+            print("Already posted — skipping.")
             continue
 
-        # Extract media
         video = extract_video(post)
         gif = extract_gif(post)
         images = extract_images(post)
 
-        # Skip text-only posts
         if not video and not gif and not images:
-            print("Text-only post — skipping.")
+            print("Text-only — skipping.")
             posted_ids.append(post_id)
             save_state(state)
             continue
 
-        # VIDEO first
+        # VIDEO
         if video:
             print("Posting VIDEO…")
             try:
-                post_to_bluesky_video(tumblr_link, video)
+                post_to_bluesky_video(client, tumblr_link, video)
                 print("✔ Video posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -315,11 +263,11 @@ def main():
                 print("❌ Video error:", e)
             continue
 
-        # GIF second
+        # GIF
         if gif:
             print("Posting GIF…")
             try:
-                post_to_bluesky_gif(tumblr_link, gif)
+                post_to_bluesky_gif(client, tumblr_link, gif)
                 print("✔ GIF posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -327,11 +275,11 @@ def main():
                 print("❌ GIF error:", e)
             continue
 
-        # IMAGES last
+        # IMAGES
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
-                post_to_bluesky_images(tumblr_link, images)
+                post_to_bluesky_images(client, tumblr_link, images)
                 print("✔ Images posted.")
                 posted_ids.append(post_id)
                 save_state(state)
@@ -344,4 +292,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
