@@ -54,18 +54,14 @@ def get_latest_tumblr_post():
 
 
 # ---------------------------------------------------------
-#        BLUESKY DUPLICATE CHECK (IMPROVED)
+#        BLUESKY DUPLICATE CHECK (PERFECTED)
 # ---------------------------------------------------------
 
-def normalize_url(url):
-    if not url:
-        return ""
-    url = re.sub(r'\?.*$', "", url)  # remove query params
-    return url.rstrip("/")           # remove trailing slash
-
-
-def bluesky_recent_posts_texts(limit=3):
-    """Return last 3 Bluesky post texts."""
+def tumblr_id_in_bluesky_posts(post_id, limit=5):
+    """
+    Check the last 5 Bluesky posts for this Tumblr post_id.
+    This is the only reliable duplicate detection.
+    """
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
 
@@ -73,25 +69,23 @@ def bluesky_recent_posts_texts(limit=3):
         params={"actor": client.me.did, "limit": limit}
     )
 
-    texts = []
     for item in feed.feed:
         record = item.post.record
-        if isinstance(record, dict):
-            text = record.get("text", "").strip()
-            texts.append(text)
+        if not isinstance(record, dict):
+            continue
 
-    return texts
-
-
-def bluesky_has_posted_url(tumblr_url):
-    """Checks last 3 Bluesky posts for this Tumblr link."""
-    norm = normalize_url(tumblr_url)
-    recent = bluesky_recent_posts_texts()
-
-    for text in recent:
-        if normalize_url(text) == norm:
+        text = record.get("text", "")
+        if post_id in text:  # <---- The magic fix
             return True
+
     return False
+
+
+def normalize_url(url):
+    if not url:
+        return ""
+    url = re.sub(r'\?.*$', "", url)
+    return url.rstrip("/")
 
 
 # ---------------------------------------------------------
@@ -101,16 +95,13 @@ def bluesky_has_posted_url(tumblr_url):
 def extract_all_images(post):
     urls = []
 
-    # Trail HTML
     for item in post.get("trail", []):
         html = item.get("content_raw") or item.get("content") or ""
         urls += re.findall(r'<img[^>]+src="([^"]+)"', html)
 
-    # Body HTML
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # Photo posts
     if post.get("type") == "photo" and "photos" in post:
         for p in post["photos"]:
             try:
@@ -118,13 +109,12 @@ def extract_all_images(post):
             except:
                 pass
 
-    # Deduplicate while preserving order
     clean = []
     for u in urls:
         if u not in clean:
             clean.append(u)
 
-    return clean[:4]  # Bluesky maximum
+    return clean[:4]
 
 
 # ---------------------------------------------------------
@@ -180,14 +170,14 @@ def main():
     print(f"Stored last id    : {last_post_id}")
 
     # -------------------------------------------------
-    # IMPROVED BLUESKY DUPLICATE CHECK
+    #   PERFECT DUPLICATE CHECK (USING POST ID)
     # -------------------------------------------------
-    if bluesky_has_posted_url(tumblr_link):
-        print("Bluesky already posted this link. Exiting.")
+    if tumblr_id_in_bluesky_posts(post_id):
+        print("Bluesky already posted this Tumblr post. Exiting.")
         save_state(post_id, tumblr_link)
         return
 
-    # Local state duplicate check
+    # Local duplicate check (backup)
     if post_id == last_post_id or normalize_url(tumblr_link) == normalize_url(last_post_url):
         print("No new posts. Exiting.")
         return
