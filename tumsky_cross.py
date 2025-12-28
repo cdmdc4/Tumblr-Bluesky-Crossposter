@@ -178,9 +178,28 @@ def post_to_bluesky_images(tumblr_url, image_urls):
 
     uploaded = []
     for url in image_urls:
-        img = requests.get(url).content
-        blob = client.com.atproto.repo.upload_blob(img)
-        uploaded.append({"image": blob.blob, "alt": ""})
+        resp = requests.get(url)
+img = resp.content
+
+# detect correct MIME
+mime = resp.headers.get("Content-Type", None)
+
+# fallback MIME types based on file extension
+if not mime:
+    if url.lower().endswith(".gif"):
+        mime = "image/gif"
+    elif url.lower().endswith(".webp"):
+        mime = "image/webp"
+    else:
+        mime = "image/jpeg"  # safe fallback
+
+blob = client.com.atproto.repo.upload_blob(img, mime_type=mime)
+
+uploaded.append({
+    "image": blob.blob,
+    "alt": "",
+})
+
 
     embed = {
         "$type": "app.bsky.embed.images",
@@ -298,3 +317,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
