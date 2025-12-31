@@ -2,7 +2,7 @@ name: Tumblr-Bluesky-Crossposter
 
 on:
   schedule:
-    - cron: "*/1 * * * *"   # runs every 1 minute
+    - cron: "*/5 * * * *"   # safer rate-limit for Tumblr
   workflow_dispatch:
 
 jobs:
@@ -18,20 +18,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ImageMagick + FFmpeg
+      - name: Install system dependencies
         run: |
           sudo apt update
-          sudo apt install -y imagemagick ffmpeg
+          sudo apt install -y ffmpeg imagemagick libmagic1
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install requests atproto
+          pip install requests atproto python-magic
 
       - name: Run the crossposter
         env:
           TUMBLR_API_KEY: ${{ secrets.TUMBLR_API_KEY }}
-          TUMBLR_BLOG_IDENTIFIER: ${{ secrets.TUMBLR_BLOG_IDENTIFIER }}
+          TUMBLR_BLOG: ${{ secrets.TUMBLR_BLOG }}     # FIXED
           BSKY_USERNAME: ${{ secrets.BSKY_USERNAME }}
           BSKY_PASSWORD: ${{ secrets.BSKY_PASSWORD }}
         run: python tumsky_cross.py
