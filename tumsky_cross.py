@@ -171,42 +171,58 @@ def make_post_text(tumblr_url, post):
 # ---------------------------------------------------------
 
 def convert_gif_to_mp4(gif_bytes):
-    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif_file:
-        gif_file.write(gif_bytes)
-        gif_path = gif_file.name
-
-    mp4_path = gif_path.replace(".gif", ".mp4")
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", gif_path,
-        "-movflags", "faststart",
-        "-vf", "scale=-1:720:force_original_aspect_ratio=decrease",
-        "-pix_fmt", "yuv420p",
-        "-vcodec", "libx264",
-        "-preset", "veryfast",
-        "-an",
-        mp4_path,
-    ]
+    gif_path = None
+    mp4_path = None
 
     try:
+        with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif_file:
+            gif_file.write(gif_bytes)
+            gif_path = gif_file.name
+
+        mp4_path = gif_path.replace(".gif", ".mp4")
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", gif_path,
+            "-movflags", "faststart",
+            "-vf", "scale=-1:720:force_original_aspect_ratio=decrease",
+            "-pix_fmt", "yuv420p",
+            "-vcodec", "libx264",
+            "-preset", "veryfast",
+            "-an",
+            mp4_path,
+        ]
+
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        with open(mp4_path, "rb") as f:
+            mp4_data = f.read()
+
+        if len(mp4_data) > 900_000:
+            print("MP4 still too large after compression.")
+            return None
+
+        return mp4_data
+
     except Exception as e:
         print("FFmpeg conversion failed:", e)
         return None
 
-    try:
-        with open(mp4_path, "rb") as f:
-            mp4_data = f.read()
-    except:
-        return None
+    finally:
+        # Always clean up temp files
+        try:
+            if gif_path and os.path.exists(gif_path):
+                os.remove(gif_path)
+        except:
+            pass
 
-    if len(mp4_data) > 900_000:
-        print("MP4 still too large after compression.")
-        return None
+        try:
+            if mp4_path and os.path.exists(mp4_path):
+                os.remove(mp4_path)
+        except:
+            pass
 
-    return mp4_data
 
 
 # ---------------------------------------------------------
@@ -518,3 +534,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
