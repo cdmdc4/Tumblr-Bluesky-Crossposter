@@ -7,7 +7,7 @@ import tempfile
 from atproto import Client
 
 # ---------------------------------------------------------
-#                CONFIGURATION  (DO NOT REMOVE)
+#                CONFIGURATION
 # ---------------------------------------------------------
 
 TUMBLR_API_KEY = os.getenv("TUMBLR_API_KEY")
@@ -18,14 +18,16 @@ BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 
 STATE_FILE = "tumblr_state.json"
 
+
 # ---------------------------------------------------------
-#                BLUESKY CLIENT
+#                UTIL: BLUESKY CLIENT
 # ---------------------------------------------------------
 
 def get_bsky_client():
     client = Client()
     client.login(BSKY_USERNAME, BSKY_PASSWORD)
     return client
+
 
 # ---------------------------------------------------------
 #                STATE MANAGEMENT
@@ -41,10 +43,12 @@ def load_state():
     except FileNotFoundError:
         return {"posted_ids": []}
 
+
 def save_state(state):
     state["posted_ids"] = state["posted_ids"][-500:]
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
 
 # ---------------------------------------------------------
 #                TUMBLR API
@@ -53,10 +57,9 @@ def save_state(state):
 def get_recent_tumblr_posts():
     url = (
         f"https://api.tumblr.com/v2/blog/{TUMBLR_BLOG}/posts"
-        f"?api_key={TUMBLR_API_KEY}&notes_info=false&reblog_info=true&limit=30"
+        f"?api_key={TUMBLR_API_KEY}&notes_info=false&reblog_info=false&limit=30"
     )
     resp = requests.get(url).json()
-
     try:
         posts = resp["response"]["posts"]
     except:
@@ -72,94 +75,27 @@ def get_recent_tumblr_posts():
 
     return clean
 
-# ---------------------------------------------------------
-#                CAPTION LOGIC (C1 SMART FALLBACK)
-# ---------------------------------------------------------
-
-def extract_reblog_caption(post):
-    """
-    If this post is a reblog:
-        Use YOUR added caption (if any)
-        else use OP's caption
-    """
-    trail = post.get("trail", [])
-    if not trail:
-        return None
-
-    # Your added reblog text (top-level)
-    top = trail[0]
-    my_text = top.get("content_raw", "") or ""
-    my_text = strip_html(my_text).strip()
-
-    if my_text:
-        return my_text  # You added text
-
-    # OP caption fallback
-    for t in trail:
-        if t.get("is_root_item"):
-            op_html = t.get("content_raw", "") or ""
-            op = strip_html(op_html).strip()
-            if op:
-                return op
-
-    return None
-
-
-def strip_html(html):
-    return re.sub(r"<[^>]*>", "", html or "")
-
-def make_post_text(tumblr_url, post):
-    """
-    Caption rules:
-    1) If reblog → use reblog caption (your text, then OP caption)
-    2) Else if original → use post.caption
-    """
-    # Is reblog?
-    if post.get("reblogged_from_id"):
-        cap = extract_reblog_caption(post)
-        if cap:
-            return f"({tumblr_url}) {cap}"
-        else:
-            return f"({tumblr_url})"
-
-    # Original post
-    caption = post.get("caption", "").strip()
-    if caption:
-        caption = strip_html(caption)
-        return f"({tumblr_url}) {caption}"
-
-    return f"({tumblr_url})"
 
 # ---------------------------------------------------------
-#                MEDIA EXTRACTION (R2 LOGIC)
+#                MEDIA EXTRACTION
 # ---------------------------------------------------------
 
-def extract_images_from_block(blocks):
+def extract_images(post):
     urls = []
-    for block in blocks:
+
+    for block in post.get("content", []):
         if block.get("type") == "image":
             for media in block.get("media", []):
                 if "url" in media:
                     urls.append(media["url"])
-    return urls
 
-def extract_video_from_block(blocks):
-    for block in blocks:
-        if block.get("type") == "video":
-            for media in block.get("media", []):
-                if media.get("url", "").endswith(".mp4"):
-                    return media["url"]
-    return None
+    for item in post.get("trail", []):
+        html = item.get("content_raw") or ""
+        urls += re.findall(r'<img[^>]+src="([^"]+)"', html)
 
-def extract_images(post):
-    # Try primary post body first
-    urls = extract_images_from_block(post.get("content", []))
-
-    # OLD STYLE
     body = post.get("body", "")
     urls += re.findall(r'<img[^>]+src="([^"]+)"', body)
 
-    # OLD "photo" array
     if post.get("type") == "photo":
         for p in post.get("photos", []):
             try:
@@ -167,7 +103,6 @@ def extract_images(post):
             except:
                 pass
 
-    # Deduplicate
     clean = []
     for u in urls:
         if u not in clean:
@@ -175,23 +110,30 @@ def extract_images(post):
 
     return clean[:4]
 
-def extract_video(post):
-    # New Tumblr API blocks
-    v = extract_video_from_block(post.get("content", []))
-    if v:
-        return v
 
-    # OLD TUMBLR VIDEO FIELDS
+def extract_gif(post):
+    for url in extract_images(post):
+        if url.lower().endswith(".gif"):
+            return url
+    return None
+
+
+def extract_video(post):
+    for block in post.get("content", []):
+        if block.get("type") == "video":
+            for media in block.get("media", []):
+                u = media.get("url", "")
+                if u.endswith(".mp4"):
+                    return u
+
     if post.get("video_url", "").endswith(".mp4"):
         return post["video_url"]
 
-    # Trails
     for t in post.get("trail", []):
         m = re.search(r'src="([^"]+\.mp4)"', t.get("content_raw", ""))
         if m:
             return m.group(1)
 
-    # Player
     for embed in post.get("player", []):
         m = re.search(r'src="([^"]+\.mp4)"', embed.get("embed_code", ""))
         if m:
@@ -199,49 +141,9 @@ def extract_video(post):
 
     return None
 
-# ---------------------------------------------------------
-#               R2: MEDIA FOR REBLOGS
-# ---------------------------------------------------------
-
-def resolve_media(post):
-    """
-    R2 Logic:
-    1) If reblog has its OWN media → use that
-    2) else → use OP's media
-    """
-    # Step 1: Try THIS post
-    video = extract_video(post)
-    images = extract_images(post)
-    gif = next((u for u in images if u.lower().endswith(".gif")), None)
-
-    if video or gif or images:
-        return video, gif, images
-
-    # Step 2: Fall back to OP (root trail)
-    for t in post.get("trail", []):
-        if t.get("is_root_item"):
-            root_html = t.get("content_raw", "")
-
-            # Extract images
-            urls = re.findall(r'<img[^>]+src="([^"]+)"', root_html)
-            clean = []
-            for u in urls:
-                if u not in clean:
-                    clean.append(u)
-            clean = clean[:4]
-
-            root_gif = next((u for u in clean if u.lower().endswith(".gif")), None)
-
-            # Extract mp4
-            m = re.search(r'src="([^"]+\.mp4)"', root_html)
-            root_video = m.group(1) if m else None
-
-            return root_video, root_gif, clean
-
-    return None, None, None
 
 # ---------------------------------------------------------
-#                ALT TEXT
+#                ALT TEXT + CAPTION HELPERS
 # ---------------------------------------------------------
 
 def make_alt_text(post):
@@ -250,17 +152,35 @@ def make_alt_text(post):
         return ""
     return " ".join(tags)
 
+
+def make_post_text(tumblr_url, post):
+    caption = post.get("caption", "").strip()
+    if caption:
+        return f"({tumblr_url}) {caption}"
+    else:
+        return f"({tumblr_url})"
+
+
 # ---------------------------------------------------------
-#        GIF → MP4 Conversion (FFmpeg)
+#         GIF → MP4 Conversion (FFmpeg)
 # ---------------------------------------------------------
 
 def convert_gif_to_mp4(gif_bytes):
-    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
-        f.write(gif_bytes)
-        gif_path = f.name
+    """
+    Convert GIF → MP4 using FFmpeg.
+    Returns mp4_bytes or None if failed or too large.
+    """
+
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif_file:
+        gif_file.write(gif_bytes)
+        gif_path = gif_file.name
 
     mp4_path = gif_path.replace(".gif", ".mp4")
 
+    # ffmpeg command:
+    # - loop once
+    # - H.264 baseline
+    # - 720p max height
     cmd = [
         "ffmpeg",
         "-y",
@@ -275,107 +195,58 @@ def convert_gif_to_mp4(gif_bytes):
     ]
 
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
         print("FFmpeg conversion failed:", e)
         return None
 
+    # Read MP4 back
     try:
         with open(mp4_path, "rb") as f:
-            data = f.read()
-        if len(data) > 900_000:
-            print("MP4 still too large after conversion.")
-            return None
-        return data
+            mp4_data = f.read()
     except:
         return None
 
-# ---------------------------------------------------------
-#      FALLBACK: Shrink large images (ImageMagick)
-# ---------------------------------------------------------
+    # Bluesky limit
+    if len(mp4_data) > 900_000:
+        print("MP4 still too large after compression.")
+        return None
 
-def shrink_image_if_needed(img_bytes):
-    if len(img_bytes) <= 950_000:
-        return img_bytes
+    return mp4_data
 
-    print("Image too large — shrinking…")
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(img_bytes)
-        in_path = f.name
-
-    out_path = in_path + "_small.jpg"
-
-    cmd = [
-        "convert",
-        in_path,
-        "-resize", "1600x1600>",
-        "-strip",
-        "-quality", "85",
-        out_path,
-    ]
-
-    try:
-        subprocess.run(cmd, check=True)
-        with open(out_path, "rb") as f:
-            data = f.read()
-        return data
-    except:
-        print("ImageMagick failed — using original")
-        return img_bytes
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS
+#                BLUESKY UPLOADS WITH ALT TEXT
 # ---------------------------------------------------------
 
 def post_to_bluesky_video(client, post_text, video_url, alt_text):
     print("Downloading video…")
     data = requests.get(video_url).content
 
-    if len(data) > 900_000:
-        print("Video too large — re-encoding…")
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            f.write(data)
-            in_path = f.name
-
-        out_path = in_path + "_small.mp4"
-        cmd = [
-            "ffmpeg", "-y", "-i", in_path,
-            "-movflags", "faststart",
-            "-pix_fmt", "yuv420p",
-            "-preset", "veryfast",
-            "-vf", "scale=-1:720:force_original_aspect_ratio=decrease",
-            "-an",
-            out_path,
-        ]
-
-        try:
-            subprocess.run(cmd, check=True)
-            with open(out_path, "rb") as f:
-                data = f.read()
-        except:
-            print("Re-encode failed — skipping video.")
-            return None
-
+    print("Uploading blob…")
     blob = client.com.atproto.repo.upload_blob(data)
-    embed = {"$type": "app.bsky.embed.video", "video": blob.blob, "alt": alt_text}
+
+    video_embed = {
+        "$type": "app.bsky.embed.video",
+        "video": blob.blob,
+        "alt": alt_text
+    }
 
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
         record={
             "$type": "app.bsky.feed.post",
             "text": post_text,
-            "embed": embed,
+            "embed": video_embed,
             "createdAt": client.get_current_time_iso(),
         }
     )
+
 
 def post_to_bluesky_images(client, post_text, image_urls, alt_text):
     uploaded = []
     for url in image_urls:
         data = requests.get(url).content
-        data = shrink_image_if_needed(data)
-
         blob = client.com.atproto.repo.upload_blob(data)
         uploaded.append({"image": blob.blob, "alt": alt_text})
 
@@ -388,38 +259,47 @@ def post_to_bluesky_images(client, post_text, image_urls, alt_text):
             "text": post_text,
             "embed": embed,
             "createdAt": client.get_current_time_iso(),
-        }
+        },
     )
+
 
 def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
     print("Downloading GIF…")
     gif_data = requests.get(gif_url).content
 
-    # Large GIF → convert to MP4
     if len(gif_data) > 900_000:
         print("GIF too large — converting to MP4…")
-        mp4 = convert_gif_to_mp4(gif_data)
-        if not mp4:
-            print("❌ GIF conversion failed — skipping")
+        mp4_data = convert_gif_to_mp4(gif_data)
+        if mp4_data is None:
+            print("❌ GIF could not be converted — skipping.")
             return None
 
-        blob = client.com.atproto.repo.upload_blob(mp4)
-        embed = {"$type": "app.bsky.embed.video", "video": blob.blob, "alt": alt_text}
+        print("Uploading MP4…")
+        blob = client.com.atproto.repo.upload_blob(mp4_data)
+
+        video_embed = {
+            "$type": "app.bsky.embed.video",
+            "video": blob.blob,
+            "alt": alt_text
+        }
 
         return client.app.bsky.feed.post.create(
             repo=client.me.did,
             record={
                 "$type": "app.bsky.feed.post",
                 "text": post_text,
-                "embed": embed,
+                "embed": video_embed,
                 "createdAt": client.get_current_time_iso(),
             }
         )
 
-    # Small GIF → treat as image
+    # If GIF is small enough (<900KB), upload as image
     blob = client.com.atproto.repo.upload_blob(gif_data)
-    embed = {"$type": "app.bsky.embed.images",
-             "images": [{"image": blob.blob, "alt": alt_text}]}
+
+    embed = {
+        "$type": "app.bsky.embed.images",
+        "images": [{"image": blob.blob, "alt": alt_text}],
+    }
 
     return client.app.bsky.feed.post.create(
         repo=client.me.did,
@@ -428,11 +308,12 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
             "text": post_text,
             "embed": embed,
             "createdAt": client.get_current_time_iso(),
-        }
+        },
     )
 
+
 # ---------------------------------------------------------
-#        FETCH RECENT BLUESKY POSTS (for dedupe)
+#        FETCH RECENT BLUESKY POSTS TO PREVENT DUPES
 # ---------------------------------------------------------
 
 def get_recent_bsky_tumblr_ids(client):
@@ -461,6 +342,7 @@ def get_recent_bsky_tumblr_ids(client):
 
     return tumblr_ids
 
+
 # ---------------------------------------------------------
 #                MAIN LOGIC
 # ---------------------------------------------------------
@@ -469,6 +351,7 @@ def main():
     print("Running Tumblr → Bluesky crossposter…")
 
     client = get_bsky_client()
+
     bsky_ids = get_recent_bsky_tumblr_ids(client)
     print("Found", len(bsky_ids), "existing Tumblr IDs on Bluesky.")
 
@@ -481,8 +364,9 @@ def main():
         return
 
     posts = sorted(posts, key=lambda p: p.get("timestamp", 0))
+    posts = posts[:30]
 
-    for post in posts[:30]:
+    for post in posts:
         post_id = str(post.get("id"))
         tumblr_link = post.get("post_url", "").strip()
         post_text = make_post_text(tumblr_link, post)
@@ -494,43 +378,42 @@ def main():
             print("Already posted — skipping.")
             continue
 
-        # R2 media resolution
-        video, gif, images = resolve_media(post)
+        video = extract_video(post)
+        gif = extract_gif(post)
+        images = extract_images(post)
 
-        # Video
         if video:
             print("Posting VIDEO…")
             try:
                 post_to_bluesky_video(client, post_text, video, alt_text)
                 print("✔ Video posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Video error:", e)
-            posted_ids.append(post_id)
-            save_state(state)
             continue
 
-        # GIF
         if gif:
-            print("Posting GIF…")
+            print("Processing GIF…")
             try:
-                post_to_bluesky_gif(client, post_text, gif, alt_text)
-                print("✔ GIF posted.")
+                result = post_to_bluesky_gif(client, post_text, gif, alt_text)
+                if result:
+                    print("✔ GIF posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ GIF error:", e)
-            posted_ids.append(post_id)
-            save_state(state)
             continue
 
-        # Images
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
                 post_to_bluesky_images(client, post_text, images, alt_text)
                 print("✔ Images posted.")
+                posted_ids.append(post_id)
+                save_state(state)
             except Exception as e:
                 print("❌ Image error:", e)
-            posted_ids.append(post_id)
-            save_state(state)
             continue
 
         print("Nothing postable — skipping.")
@@ -538,6 +421,7 @@ def main():
         save_state(state)
 
     print("\nDone!")
+
 
 if __name__ == "__main__":
     main()
