@@ -21,7 +21,7 @@ BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 STATE_FILE = "tumblr_state.json"
 
 MAX_BSKY_BLOB = 976_000      # hard Bluesky limit
-TARGET_MAX = 950_000          # safety margin
+TARGET_MAX = 950_000         # safety margin
 
 
 # ---------------------------------------------------------
@@ -124,7 +124,6 @@ def extract_gif(post):
 
 
 def extract_video(post):
-    # content blocks
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
@@ -132,17 +131,14 @@ def extract_video(post):
                 if u.endswith(".mp4"):
                     return u
 
-    # legacy
     if post.get("video_url", "").endswith(".mp4"):
         return post["video_url"]
 
-    # trail
     for t in post.get("trail", []):
         m = re.search(r'src="([^"]+\.mp4)"', t.get("content_raw", ""))
         if m:
             return m.group(1)
 
-    # embed
     for embed in post.get("player", []):
         m = re.search(r'src="([^"]+\.mp4)"', embed.get("embed_code", ""))
         if m:
@@ -214,44 +210,80 @@ def convert_gif_to_mp4(gif_bytes):
 
 
 # ---------------------------------------------------------
-#    IMAGE COMPRESSION ENGINE (PNG/WebP → JPEG fallback)
+#    NEW IMAGE COMPRESSION ENGINE (JPEG + DOWNSCALE)
 # ---------------------------------------------------------
 
-def compress_if_needed(image_bytes):
-    if len(image_bytes) <= MAX_BSKY_BLOB:
-        return image_bytes  # OK as-is
+def compress_and_resize(image_bytes):
+    """Convert to JPEG and automatically reduce quality and dimensions
+    until <= TARGET_MAX bytes."""
 
-    print(f"Image too large ({len(image_bytes)/1024:.1f} KB). Compressing…")
+    if len(image_bytes) <= MAX_BSKY_BLOB:
+        return image_bytes
+
+    print(f"Image too large ({len(image_bytes)/1024:.1f} KB) → compressing + resizing…")
 
     try:
         img = Image.open(BytesIO(image_bytes))
-    except:
-        print("❌ Could not open image for compression.")
+    except Exception as e:
+        print("❌ Cannot open image:", e)
         return None
 
-    # convert RGBA → RGB (transparency lost, required for JPEG)
     if img.mode in ("RGBA", "LA"):
         img = img.convert("RGB")
 
-    # try multiple JPEG qualities
-    for quality in [95, 90, 85, 80, 75, 70]:
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG", quality=quality)
-        data = buffer.getvalue()
+    width, height = img.size
 
-        print(f" → Quality {quality}: {len(data)/1024:.1f} KB")
+    scale_factors = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
+    qualities = [95, 90, 85, 80, 75, 70]
 
-        if len(data) <= TARGET_MAX:
-            print(" ✓ Compression successful.")
-            return data
+    for scale in scale_factors:
+        w = max(1, int(width * scale))
+        h = max(1, int(height * scale))
+        resized = img.resize((w, h), Image.LANCZOS)
 
-    print("❌ Could not compress under size limit — skipping image.")
+        for q in qualities:
+            buf = BytesIO()
+            try:
+                resized.save(buf, format="JPEG", quality=q)
+            except Exception:
+                continue
+
+            data = buf.getvalue()
+            print(f" → {w}x{h} q{q}: {len(data)/1024:.1f} KB")
+
+            if len(data) <= TARGET_MAX:
+                print(" ✓ Compression successful.")
+                return data
+
+    print("❌ Could not compress image under limit.")
     return None
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS WITH ALT TEXT
+#                BLUESKY UPLOADS
 # ---------------------------------------------------------
+
+def upload_with_compression(client, raw):
+    """Try to upload raw → if TooLarge → compress_and_resize → retry."""
+    try:
+        return client.com.atproto.repo.upload_blob(raw)
+    except Exception as e:
+        err = str(e)
+        if "BlobTooLarge" not in err:
+            print("Upload failed (not size issue):", err)
+            return None
+
+    print("BlobTooLarge → compressing…")
+    fixed = compress_and_resize(raw)
+    if not fixed:
+        return None
+
+    try:
+        return client.com.atproto.repo.upload_blob(fixed)
+    except Exception as e:
+        print("Upload still failing:", e)
+        return None
+
 
 def post_to_bluesky_video(client, post_text, video_url, alt_text):
     print("Downloading video…")
@@ -283,16 +315,15 @@ def post_to_bluesky_images(client, post_text, image_urls, alt_text):
     for url in image_urls:
         raw = requests.get(url).content
 
-        if len(raw) > MAX_BSKY_BLOB:
-            raw = compress_if_needed(raw)
-            if raw is None:
-                continue
+        blob = upload_with_compression(client, raw)
+        if blob is None:
+            print("❌ Image too large even after compression — skipping.")
+            continue
 
-        blob = client.com.atproto.repo.upload_blob(raw)
         uploaded.append({"image": blob.blob, "alt": alt_text})
 
     if not uploaded:
-        print("❌ All images too large — skipping post.")
+        print("❌ No images could be uploaded.")
         return None
 
     embed = {"$type": "app.bsky.embed.images", "images": uploaded}
@@ -313,14 +344,16 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
     gif_data = requests.get(gif_url).content
 
     if len(gif_data) > 900_000:
-        print("GIF too large — converting to MP4…")
+        print("GIF too large → converting to MP4…")
         mp4_data = convert_gif_to_mp4(gif_data)
         if mp4_data is None:
-            print("❌ GIF could not be converted — skipping.")
+            print("❌ Could not convert GIF — skipping.")
             return None
 
-        print("Uploading MP4…")
-        blob = client.com.atproto.repo.upload_blob(mp4_data)
+        blob = upload_with_compression(client, mp4_data)
+        if blob is None:
+            print("❌ MP4 upload failed.")
+            return None
 
         video_embed = {
             "$type": "app.bsky.embed.video",
@@ -338,8 +371,11 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
             }
         )
 
-    # If GIF < limit upload as image
-    blob = client.com.atproto.repo.upload_blob(gif_data)
+    blob = upload_with_compression(client, gif_data)
+    if blob is None:
+        print("❌ GIF upload failed.")
+        return None
+
     embed = {
         "$type": "app.bsky.embed.images",
         "images": [{"image": blob.blob, "alt": alt_text}],
@@ -366,7 +402,6 @@ def get_recent_bsky_tumblr_ids(client):
     )
 
     tumblr_ids = set()
-
     TUMBLR_ID_REGEX = re.compile(r"(?:tumblr\.com/.*/post/|tumblr\.com/post/|/post/)(\d+)")
 
     for item in feed.feed:
