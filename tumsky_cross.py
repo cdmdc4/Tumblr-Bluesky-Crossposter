@@ -4,6 +4,8 @@ import re
 import requests
 import subprocess
 import tempfile
+from io import BytesIO
+from PIL import Image
 from atproto import Client
 
 # ---------------------------------------------------------
@@ -17,6 +19,9 @@ BSKY_USERNAME = os.getenv("BSKY_USERNAME")
 BSKY_PASSWORD = os.getenv("BSKY_PASSWORD")
 
 STATE_FILE = "tumblr_state.json"
+
+MAX_BSKY_BLOB = 976_000      # hard Bluesky limit
+TARGET_MAX = 950_000          # safety margin
 
 
 # ---------------------------------------------------------
@@ -119,6 +124,7 @@ def extract_gif(post):
 
 
 def extract_video(post):
+    # content blocks
     for block in post.get("content", []):
         if block.get("type") == "video":
             for media in block.get("media", []):
@@ -126,14 +132,17 @@ def extract_video(post):
                 if u.endswith(".mp4"):
                     return u
 
+    # legacy
     if post.get("video_url", "").endswith(".mp4"):
         return post["video_url"]
 
+    # trail
     for t in post.get("trail", []):
         m = re.search(r'src="([^"]+\.mp4)"', t.get("content_raw", ""))
         if m:
             return m.group(1)
 
+    # embed
     for embed in post.get("player", []):
         m = re.search(r'src="([^"]+\.mp4)"', embed.get("embed_code", ""))
         if m:
@@ -166,21 +175,12 @@ def make_post_text(tumblr_url, post):
 # ---------------------------------------------------------
 
 def convert_gif_to_mp4(gif_bytes):
-    """
-    Convert GIF → MP4 using FFmpeg.
-    Returns mp4_bytes or None if failed or too large.
-    """
-
     with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif_file:
         gif_file.write(gif_bytes)
         gif_path = gif_file.name
 
     mp4_path = gif_path.replace(".gif", ".mp4")
 
-    # ffmpeg command:
-    # - loop once
-    # - H.264 baseline
-    # - 720p max height
     cmd = [
         "ffmpeg",
         "-y",
@@ -200,19 +200,53 @@ def convert_gif_to_mp4(gif_bytes):
         print("FFmpeg conversion failed:", e)
         return None
 
-    # Read MP4 back
     try:
         with open(mp4_path, "rb") as f:
             mp4_data = f.read()
     except:
         return None
 
-    # Bluesky limit
     if len(mp4_data) > 900_000:
         print("MP4 still too large after compression.")
         return None
 
     return mp4_data
+
+
+# ---------------------------------------------------------
+#    IMAGE COMPRESSION ENGINE (PNG/WebP → JPEG fallback)
+# ---------------------------------------------------------
+
+def compress_if_needed(image_bytes):
+    if len(image_bytes) <= MAX_BSKY_BLOB:
+        return image_bytes  # OK as-is
+
+    print(f"Image too large ({len(image_bytes)/1024:.1f} KB). Compressing…")
+
+    try:
+        img = Image.open(BytesIO(image_bytes))
+    except:
+        print("❌ Could not open image for compression.")
+        return None
+
+    # convert RGBA → RGB (transparency lost, required for JPEG)
+    if img.mode in ("RGBA", "LA"):
+        img = img.convert("RGB")
+
+    # try multiple JPEG qualities
+    for quality in [95, 90, 85, 80, 75, 70]:
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=quality)
+        data = buffer.getvalue()
+
+        print(f" → Quality {quality}: {len(data)/1024:.1f} KB")
+
+        if len(data) <= TARGET_MAX:
+            print(" ✓ Compression successful.")
+            return data
+
+    print("❌ Could not compress under size limit — skipping image.")
+    return None
 
 
 # ---------------------------------------------------------
@@ -245,10 +279,21 @@ def post_to_bluesky_video(client, post_text, video_url, alt_text):
 
 def post_to_bluesky_images(client, post_text, image_urls, alt_text):
     uploaded = []
+
     for url in image_urls:
-        data = requests.get(url).content
-        blob = client.com.atproto.repo.upload_blob(data)
+        raw = requests.get(url).content
+
+        if len(raw) > MAX_BSKY_BLOB:
+            raw = compress_if_needed(raw)
+            if raw is None:
+                continue
+
+        blob = client.com.atproto.repo.upload_blob(raw)
         uploaded.append({"image": blob.blob, "alt": alt_text})
+
+    if not uploaded:
+        print("❌ All images too large — skipping post.")
+        return None
 
     embed = {"$type": "app.bsky.embed.images", "images": uploaded}
 
@@ -293,9 +338,8 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
             }
         )
 
-    # If GIF is small enough (<900KB), upload as image
+    # If GIF < limit upload as image
     blob = client.com.atproto.repo.upload_blob(gif_data)
-
     embed = {
         "$type": "app.bsky.embed.images",
         "images": [{"image": blob.blob, "alt": alt_text}],
@@ -317,23 +361,12 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
 # ---------------------------------------------------------
 
 def get_recent_bsky_tumblr_ids(client):
-    """
-    Fetch recent Bluesky posts and extract any Tumblr post IDs mentioned
-    in them, regardless of formatting, slug, HTML, or URL variations.
-    Returns a set of Tumblr post IDs (strings).
-    """
-
     feed = client.app.bsky.feed.get_author_feed(
         params={"actor": client.me.did, "limit": 50}
     )
 
     tumblr_ids = set()
 
-    # Matches:
-    # - https://tumblr.com/post/123456789
-    # - https://blog.tumblr.com/post/123456789/slug-here
-    # - (https://myblog.tumblr.com/post/123456789/)
-    # - raw: 123456789
     TUMBLR_ID_REGEX = re.compile(r"(?:tumblr\.com/.*/post/|tumblr\.com/post/|/post/)(\d+)")
 
     for item in feed.feed:
@@ -345,22 +378,17 @@ def get_recent_bsky_tumblr_ids(client):
         if not record:
             continue
 
-        # record.text is plain text (Bluesky strips HTML)
         text = getattr(record, "text", "")
         if not isinstance(text, str):
             continue
 
-        # extract ALL tumblr IDs from the text
         for match in TUMBLR_ID_REGEX.findall(text):
             tumblr_ids.add(match)
 
-        # as fallback: raw IDs (standalone digits)
-        # helps if Bluesky strips URL completely
         for match in re.findall(r"\b(\d{9,20})\b", text):
             tumblr_ids.add(match)
 
     return tumblr_ids
-
 
 
 # ---------------------------------------------------------
@@ -428,10 +456,11 @@ def main():
         if images:
             print(f"Posting {len(images)} IMAGES…")
             try:
-                post_to_bluesky_images(client, post_text, images, alt_text)
-                print("✔ Images posted.")
-                posted_ids.append(post_id)
-                save_state(state)
+                res = post_to_bluesky_images(client, post_text, images, alt_text)
+                if res:
+                    print("✔ Images posted.")
+                    posted_ids.append(post_id)
+                    save_state(state)
             except Exception as e:
                 print("❌ Image error:", e)
             continue
@@ -445,4 +474,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
