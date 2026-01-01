@@ -31,7 +31,7 @@ jobs:
       - name: Run the crossposter
         env:
           TUMBLR_API_KEY: ${{ secrets.TUMBLR_API_KEY }}
-          TUMBLR_BLOG: ${{ secrets.TUMBLR_BLOG }}     # FIXED
+          TUMBLR_BLOG_IDENTIFIER: ${{ secrets.TUMBLR_BLOG_IDENTIFIER }}
           BSKY_USERNAME: ${{ secrets.BSKY_USERNAME }}
           BSKY_PASSWORD: ${{ secrets.BSKY_PASSWORD }}
         run: python tumsky_cross.py
