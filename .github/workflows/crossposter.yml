@@ -2,7 +2,7 @@ name: Tumblr-Bluesky-Crossposter
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # safer rate-limit for Tumblr
+    - cron: "*/1 * * * *"   # safer rate-limit for Tumblr
   workflow_dispatch:
 
 jobs:
