@@ -317,11 +317,24 @@ def post_to_bluesky_gif(client, post_text, gif_url, alt_text):
 # ---------------------------------------------------------
 
 def get_recent_bsky_tumblr_ids(client):
+    """
+    Fetch recent Bluesky posts and extract any Tumblr post IDs mentioned
+    in them, regardless of formatting, slug, HTML, or URL variations.
+    Returns a set of Tumblr post IDs (strings).
+    """
+
     feed = client.app.bsky.feed.get_author_feed(
         params={"actor": client.me.did, "limit": 50}
     )
 
     tumblr_ids = set()
+
+    # Matches:
+    # - https://tumblr.com/post/123456789
+    # - https://blog.tumblr.com/post/123456789/slug-here
+    # - (https://myblog.tumblr.com/post/123456789/)
+    # - raw: 123456789
+    TUMBLR_ID_REGEX = re.compile(r"(?:tumblr\.com/.*/post/|tumblr\.com/post/|/post/)(\d+)")
 
     for item in feed.feed:
         post = getattr(item, "post", None)
@@ -332,15 +345,22 @@ def get_recent_bsky_tumblr_ids(client):
         if not record:
             continue
 
+        # record.text is plain text (Bluesky strips HTML)
         text = getattr(record, "text", "")
         if not isinstance(text, str):
             continue
 
-        match = re.search(r"tumblr\.com/.+/(\d+)", text)
-        if match:
-            tumblr_ids.add(match.group(1))
+        # extract ALL tumblr IDs from the text
+        for match in TUMBLR_ID_REGEX.findall(text):
+            tumblr_ids.add(match)
+
+        # as fallback: raw IDs (standalone digits)
+        # helps if Bluesky strips URL completely
+        for match in re.findall(r"\b(\d{9,20})\b", text):
+            tumblr_ids.add(match)
 
     return tumblr_ids
+
 
 
 # ---------------------------------------------------------
@@ -425,3 +445,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
