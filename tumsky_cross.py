@@ -210,13 +210,10 @@ def convert_gif_to_mp4(gif_bytes):
 
 
 # ---------------------------------------------------------
-#    NEW IMAGE COMPRESSION ENGINE (JPEG + DOWNSCALE)
+#    IMAGE COMPRESSION ENGINE (JPEG + DOWNSCALE)
 # ---------------------------------------------------------
 
 def compress_and_resize(image_bytes):
-    """Convert to JPEG and automatically reduce quality and dimensions
-    until <= TARGET_MAX bytes."""
-
     if len(image_bytes) <= MAX_BSKY_BLOB:
         return image_bytes
 
@@ -260,30 +257,42 @@ def compress_and_resize(image_bytes):
 
 
 # ---------------------------------------------------------
-#                BLUESKY UPLOADS
+#        FIXED: BLUESKY UPLOADS WITH SIZE CHECK
 # ---------------------------------------------------------
 
 def upload_with_compression(client, raw):
-    """Try to upload raw → if TooLarge → compress_and_resize → retry."""
-    try:
-        return client.com.atproto.repo.upload_blob(raw)
-    except Exception as e:
-        err = str(e)
-        if "BlobTooLarge" not in err:
-            print("Upload failed (not size issue):", err)
+    """
+    ALWAYS check size before upload.
+    If > MAX_BSKY_BLOB → compress.
+    If Bluesky still returns BlobTooLarge → compress again.
+    """
+
+    # Pre-check
+    if len(raw) > MAX_BSKY_BLOB:
+        print(f"Raw image too large ({len(raw)/1024:.1f} KB) → compressing…")
+        raw = compress_and_resize(raw)
+        if raw is None:
             return None
 
-    print("BlobTooLarge → compressing…")
-    fixed = compress_and_resize(raw)
-    if not fixed:
-        return None
+    # Try uploading
+    resp = client.com.atproto.repo.upload_blob(raw)
 
-    try:
-        return client.com.atproto.repo.upload_blob(fixed)
-    except Exception as e:
-        print("Upload still failing:", e)
-        return None
+    # Bluesky returns Response(success=False…, not an exception)
+    if getattr(resp, "success", True) is False:
+        err = getattr(resp, "content", "")
+        if hasattr(err, "error") and err.error == "BlobTooLarge":
+            print("BlobTooLarge → compressing again…")
+            raw2 = compress_and_resize(raw)
+            if raw2 is None:
+                return None
+            return client.com.atproto.repo.upload_blob(raw2)
 
+    return resp
+
+
+# ---------------------------------------------------------
+#                BLUESKY POSTING HELPERS
+# ---------------------------------------------------------
 
 def post_to_bluesky_video(client, post_text, video_url, alt_text):
     print("Downloading video…")
