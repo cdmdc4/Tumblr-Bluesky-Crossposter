@@ -2,12 +2,16 @@ name: Tumblr-Bluesky-Crossposter
 
 on:
   schedule:
-    - cron: "*/1 * * * *"
+    - cron: "*/5 * * * *"   # run every 5 minutes instead of every 1
   workflow_dispatch:
+
+concurrency:
+  group: tumblr-crossposter
+  cancel-in-progress: true
 
 jobs:
   run-crossposter:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # less crowded than ubuntu-latest
 
     steps:
       - name: Checkout repository
